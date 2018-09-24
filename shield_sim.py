@@ -54,7 +54,7 @@ def dipoleRZ(x_vec):
     return np.array([Bx, By, Bz])
 
 
-@jit(nopython=True)
+@njit()
 def nearestIndex(array, value):
     """
     Return index of closest matching value in array.
@@ -66,7 +66,7 @@ def nearestIndex(array, value):
     return idx
 
 
-@jit(nopython=True)   
+@njit()   
 def boundingIndices(array, value):
     """
     Return index of closest and second closest matching values in array.
@@ -116,7 +116,7 @@ def fieldFunction(filename):
     return r, z, grid
 
      
-@jit(nopython=True)
+@njit()
 def acceleration(xv, va, qm, BR, BZ, r, z):
     """"
     Return old v and acceleration due to Lorentz force.
@@ -152,7 +152,7 @@ def RKtrajectory():
     return xv
     
     
-@jit(nopython=True)
+@njit()
 def randomPointOnSphere(r):
     """
     Special method to pick uniformly distributed points on a sphere.
@@ -166,7 +166,7 @@ def randomPointOnSphere(r):
     return point
     
     
-@jit(nopython=True)
+@njit()
 def randomPointOnCylinder(radius, length):
     """
     Special method to pick uniformly distributed points on a cylinder.
@@ -296,11 +296,11 @@ def monteCarlo():
     return r, z, gridOn, gridOff
     
     
-@jit(nopython=True)
+@njit(parallel=True)
 def MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, accel):    
     totalGrid = np.zeros(BR.shape)
     qm = 1.60217662e-19/1.6726219e-27
-    for particleNumber in range(1000):
+    for particleNumber in prange(10000):
         if not particleNumber % 100:
             print(particleNumber)
         particleGrid = np.zeros(BR.shape)
@@ -401,7 +401,7 @@ def testInterpolate2d():
     plt.show()
 
 
-@jit(nopython=True)
+@njit()
 def interpolate2d(xMarkers, yMarkers, zGrid, x, y):
     """
     Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
