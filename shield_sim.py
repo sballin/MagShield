@@ -117,18 +117,16 @@ def fieldFunction(filename):
 
      
 @jit(nopython=True)
-def acceleration(xv, BR, BZ, r, z):
+def acceleration(xv, va, qm, BR, BZ, r, z):
     """"
     Return old v and acceleration due to Lorentz force.
+    va should be a vector of zeros.
     """
-    v = xv[3:]
     B = Bxyz(xv[:3], BR, BZ, r, z)
-    qm = 1.60217662e-19/1.6726219e-27
-    va = np.zeros(6)
-    va[:3] = v
-    va[3] = qm*(v[1]*B[2]-v[2]*B[1])
-    va[4] = qm*(v[2]*B[0]-v[0]*B[2])
-    va[5] = qm*(v[0]*B[1]-v[1]*B[0])
+    va[:3] = xv[3:]
+    va[3] = qm*(xv[4]*B[2]-xv[5]*B[1])
+    va[4] = qm*(xv[5]*B[0]-xv[3]*B[2])
+    va[5] = qm*(xv[3]*B[1]-xv[4]*B[0])
     return va
 
 
@@ -155,10 +153,10 @@ def RKtrajectory():
     
     
 @jit(nopython=True)
-def randomPointOnCircle(r):
+def randomPointOnSphere(r):
     """
     Special method to pick uniformly distributed points on a sphere.
-    Last on page http://mathworld.wolfram.com/SpherePointPicking.html
+    Source: http://mathworld.wolfram.com/SpherePointPicking.html (last method)
     """
     x = np.random.normal()
     y = np.random.normal()
@@ -166,17 +164,52 @@ def randomPointOnCircle(r):
     point = np.array([x, y, z])
     point *= r/(x**2 + y**2 + z**2)**.5
     return point
+    
+    
+@jit(nopython=True)
+def randomPointOnCylinder(radius, length):
+    """
+    Special method to pick uniformly distributed points on a cylinder.
+    Source: http://mathworld.wolfram.com/DiskPointPicking.html
+    """
+    cylinderArea = (2*np.pi*radius)*(length*2)
+    diskArea = np.pi*radius**2
+    picker = np.random.uniform(0, cylinderArea + 2*diskArea)
+    angle = np.random.uniform(0, 2*np.pi)
+    if picker < cylinderArea:
+        x = radius*math.cos(angle)
+        y = radius*math.sin(angle)
+        z = np.random.uniform(-length, length)
+    elif cylinderArea < picker < cylinderArea + 2*diskArea:
+        r = np.sqrt(np.random.uniform(0, radius**2))
+        x = r*math.cos(angle)
+        y = r*math.sin(angle)
+        z = length
+        if diskArea < picker - cylinderArea < 2*diskArea:
+            z = -length
+    return np.array([x, y, z])
 
     
-def testRandomPointOnCircle():
+def testRandomPointOnCylinder():
     points = np.zeros((1000, 3))
     for i in range(1000):
-        points[i] = randomPointOnCircle(30)
+        points[i] = randomPointOnCylinder(10, 20)
     fig = plt.figure(figsize=(5, 5))
     ax = fig.gca(projection='3d')
     ax.scatter(points[:,0], points[:,1], points[:,2])
     plt.show()
     
+    
+def testRandomLinesOnCylinder():
+    fig = plt.figure(figsize=(5, 5))
+    ax = fig.gca(projection='3d')
+    for i in range(1000):
+        point1 = randomPointOnCylinder(10, 20)
+        point2 = randomPointOnCylinder(10, 20)
+        x, y, z = zip(point1, point2)
+        ax.plot(x, y, z)
+    plt.show()
+
     
 def axisEqual3D(ax):
     extents = np.array([getattr(ax, 'get_{}lim'.format(dim))() for dim in 'xyz'])
@@ -202,9 +235,10 @@ def monteCarlo():
     - Drop x or y position because of axisymmetry
     """
     # Initial conditions 
-    boundaryRadius = 20
+    zLim = 20
+    rLim = 10
     v0 = 2.6e8
-    maxTime = boundaryRadius*3/v0
+    maxTime = zLim*3/v0
     h = 1e-11
     times = np.arange(0, maxTime, h)
     r, z, BR = fieldFunction('Brs.txt')
@@ -216,10 +250,10 @@ def monteCarlo():
     
     # Run simulations with and without magnetic field
     start = time.time()
-    r, z, gridOff = MCRK(boundaryRadius, v0, h, times, r, z, BR, BZ, False)
+    r, z, gridOff = MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, False)
     print('Time elapsed (s):', time.time()-start)
     start = time.time()
-    r, z, gridOn = MCRK(boundaryRadius, v0, h, times, r, z, BR, BZ, True)
+    r, z, gridOn = MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, True)
     print('Time elapsed (s):', time.time()-start)
     
     # Divide cell counts by volume of cell
@@ -244,7 +278,7 @@ def monteCarlo():
     # plt.ylim([-15, 15])
     plt.colorbar(label='Particles/m^3')
     plt.subplot(133)
-    plt.imshow((BR**2+BZ**2)**.5, extent=extent, cmap=plt.cm.jet)
+    plt.imshow((BR**2+BZ**2)**.5, extent=extent, cmap=plt.cm.jet, vmax=5)
     # plt.xlim([0, 5])
     # plt.ylim([-15, 15])
     plt.colorbar(label='|B| (T)')
@@ -263,36 +297,39 @@ def monteCarlo():
     
     
 @jit(nopython=True)
-def MCRK(boundaryRadius, v0, h, times, r, z, BR, BZ, accel):    
+def MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, accel):    
     totalGrid = np.zeros(BR.shape)
+    qm = 1.60217662e-19/1.6726219e-27
     for particleNumber in range(1000):
         if not particleNumber % 100:
             print(particleNumber)
         particleGrid = np.zeros(BR.shape)
-        point1 = randomPointOnCircle(boundaryRadius)
-        point2 = randomPointOnCircle(boundaryRadius)
+        point1 = randomPointOnCylinder(rLim, zLim)
+        point2 = randomPointOnCylinder(rLim, zLim)
         direction = point2-point1
         direction /= np.linalg.norm(direction)
         
         xv = np.zeros(6)
         xv[:3] = point1
         xv[3:] = direction*v0
+        va = np.zeros(6)
         
-        for _ in range(len(times)):
+        for _ in times:
             nr = nearestIndex(r, (xv[0]**2 + xv[1]**2)**.5)
             nz = nearestIndex(z, xv[2])
             if particleGrid[nz, nr] == 0:
                 particleGrid[nz, nr] = 1
             if accel:
-                k1 = h * acceleration(xv, BR, BZ, r, z)
-                k2 = h * acceleration(xv + k1/2., BR, BZ, r, z)
-                k3 = h * acceleration(xv + k2/2., BR, BZ, r, z)
-                k4 = h * acceleration(xv + k3, BR, BZ, r, z)
+                k1 = h * acceleration(xv, va, qm, BR, BZ, r, z)
+                k2 = h * acceleration(xv + k1/2., va, qm, BR, BZ, r, z)
+                k3 = h * acceleration(xv + k2/2., va, qm, BR, BZ, r, z)
+                k4 = h * acceleration(xv + k3, va, qm, BR, BZ, r, z)
                 xv += 1./6.*(k1 + 2*k2 + 2*k3 + k4)
             else:
                 xv += np.array([xv[3]*h, xv[4]*h, xv[5]*h, 0, 0, 0])
-            distance = np.linalg.norm(xv[:3])
-            if distance > boundaryRadius:
+            
+            # If out of bounds
+            if math.fabs(xv[2]) > zLim or (xv[0]**2+xv[1]**2)**.5 > rLim:
                 break
         totalGrid += particleGrid
     return r, z, totalGrid
