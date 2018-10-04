@@ -1,4 +1,6 @@
 __pycache__
 images
 .DS_Store
+*.npy
+*.pyc
 

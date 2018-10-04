@@ -6,8 +6,9 @@ Test case: straight 1 T magnetic field and 1 GeV proton
   tau_g = 2pi/10^8 = 6.2e-8 s for a full turn
 """
 
+from __future__ import print_function
 import numpy as np
-from numba import jit, njit, prange
+from numba import njit, prange
 import matplotlib
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -82,7 +83,7 @@ def boundingIndices(array, value):
         return ni-1, ni
 
 
-@jit(nopython=True)
+@njit()
 def Bxyz(x_vec, BR, BZ, R, Z):
     """
     Given BR, BZ on an R, Z grid, return interpolated B vector at arbitrary position.
@@ -90,15 +91,13 @@ def Bxyz(x_vec, BR, BZ, R, Z):
     x, y, z = x_vec[:3]
     r = (x**2 + y**2)**.5
 
-    BRinterp = interpolate2d(R, Z, BR, r, z)
-    BZinterp = interpolate2d(R, Z, BZ, r, z)
+    BRinterp, BZinterp = interpolate2d2x(R, Z, BR, BZ, r, z)
     
     Bx = BRinterp * x/r
     By = BRinterp * y/r
     return np.array([Bx, By, BZinterp])
 
 
-# @jit(nopython=False)
 def fieldFunction(filename):
     """
     Read COMSOL output file and return function B(r, z).
@@ -130,7 +129,7 @@ def acceleration(xv, va, qm, BR, BZ, r, z):
     return va
 
 
-#@jit(nopython=True)
+#@njit()
 def RKtrajectory():
     """
     Returns trajectory and velocity of particle in each timestep.
@@ -166,51 +165,6 @@ def randomPointOnSphere(r):
     return point
     
     
-@njit()
-def randomPointOnCylinder(radius, length):
-    """
-    Special method to pick uniformly distributed points on a cylinder.
-    Source: http://mathworld.wolfram.com/DiskPointPicking.html
-    """
-    cylinderArea = (2*np.pi*radius)*(length*2)
-    diskArea = np.pi*radius**2
-    picker = np.random.uniform(0, cylinderArea + 2*diskArea)
-    angle = np.random.uniform(0, 2*np.pi)
-    if picker < cylinderArea:
-        x = radius*math.cos(angle)
-        y = radius*math.sin(angle)
-        z = np.random.uniform(-length, length)
-    elif cylinderArea < picker < cylinderArea + 2*diskArea:
-        r = np.sqrt(np.random.uniform(0, radius**2))
-        x = r*math.cos(angle)
-        y = r*math.sin(angle)
-        z = length
-        if diskArea < picker - cylinderArea < 2*diskArea:
-            z = -length
-    return np.array([x, y, z])
-
-    
-def testRandomPointOnCylinder():
-    points = np.zeros((1000, 3))
-    for i in range(1000):
-        points[i] = randomPointOnCylinder(10, 20)
-    fig = plt.figure(figsize=(5, 5))
-    ax = fig.gca(projection='3d')
-    ax.scatter(points[:,0], points[:,1], points[:,2])
-    plt.show()
-    
-    
-def testRandomLinesOnCylinder():
-    fig = plt.figure(figsize=(5, 5))
-    ax = fig.gca(projection='3d')
-    for i in range(1000):
-        point1 = randomPointOnCylinder(10, 20)
-        point2 = randomPointOnCylinder(10, 20)
-        x, y, z = zip(point1, point2)
-        ax.plot(x, y, z)
-    plt.show()
-
-    
 def axisEqual3D(ax):
     extents = np.array([getattr(ax, 'get_{}lim'.format(dim))() for dim in 'xyz'])
     sz = extents[:,1] - extents[:,0]
@@ -219,7 +173,22 @@ def axisEqual3D(ax):
     r = maxsize/2
     for ctr, dim in zip(centers, 'xyz'):
         getattr(ax, 'set_{}lim'.format(dim))(ctr - r, ctr + r)
+        
+        
+def KEtoSpeed(KE, mass):
+    """
+    Relativistic formula to convert kinetic energy and mass (eV) to speed (m/s).
+    """
+    return 299792458*(1-(KE/mass+1)**-2)**.5
+    
+    
+def gyroRadius(v, q, B, m):
+    return v*m/(q*B)
 
+
+def gyroPeriod(q, B, m):
+    return 2*np.pi*m/(q*B)
+    
     
 def monteCarlo():
     """
@@ -231,109 +200,169 @@ def monteCarlo():
     
     At each step add particle to tally of square cell in which it finds itself using modulo and index. (Investigate unique particles vs. total points.)
     
-    - Adaptive RK step size
-    - Drop x or y position because of axisymmetry
+    - Energy conservation, 
+    - End position after 2D scattering as a function of step size: make sure it converges
+    - Energy, mass spectrum
+    - RK step size: smaller than r_L in currently seen field and smaller than inter-grid spacing
+    - Cluster computing
+    - Plot of deviation with step size
+    - Different geometries/simple dipole for surveys
     """
-    # Initial conditions 
-    zLim = 20
-    rLim = 10
-    v0 = 2.6e8
-    maxTime = zLim*3/v0
+    # B field in R and Z
+    r, z, BR = fieldFunction('Brs_LFhabitat.txt')
+    r, z, BZ = fieldFunction('Bzs_LFhabitat.txt')
+    import pdb; pdb.set_trace()
+    Bmagnitude = (BR**2+BZ**2)**.5
+    # Coarseness of the output R, Z flux grid
+    reductionFactor = 10
+    # Radius of spherical simulation boundary used for launching and exiting
+    rLim = 30
+    # Particle settings
+    m = 1 * 1.6726219e-27 # kg *58 for iron
+    q = 1 * 1.60217662e-19 # C *26 for iron
+    KE0 = 1e14 # eV
+    v0 = KEtoSpeed(KE0, m*5.6095887e35) # m/s
+    maxTime = rLim*3/v0
+    # RK step size
     h = 1e-11
-    times = np.arange(0, maxTime, h)
-    r, z, BR = fieldFunction('Brs.txt')
-    r, z, BZ = fieldFunction('Bzs.txt')
-    #print(r.shape, np.min(r), np.max(r), BR.shape)
-    #(201,) 0.0 20.0 (600, 201)
-    #print(z.shape, np.min(z), np.max(z), BZ.shape)
-    #(600,) -30.000000000000004 29.900000000000848 (600, 201)
+    # Number of particles to launch
+    particles = 100000
+    maxSteps = int(maxTime/h)
     
-    # Run simulations with and without magnetic field
-    start = time.time()
-    r, z, gridOff = MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, False)
-    print('Time elapsed (s):', time.time()-start)
-    start = time.time()
-    r, z, gridOn = MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, True)
-    print('Time elapsed (s):', time.time()-start)
+    # Print sanity check info
+    print('Simulation duration (s):', maxTime)
+    print('Timestep duration (s):', h)
+    rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
+    print('Initial speed (m/s):', v0)
+    print('Time between output grid cell centers with speed v0 (s):', (rReduced[1]-rReduced[0])/v0)
+    print('Gyro-orbit in max field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.max(Bmagnitude), m), gyroPeriod(q, np.max(Bmagnitude), m)))
+    print('Gyro-orbit in min field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.min(Bmagnitude), m), gyroPeriod(q, np.min(Bmagnitude), m)))
+    print('Maximum number of timesteps:', maxSteps)
     
-    # Divide cell counts by volume of cell
-    for i in range(len(r)-1):
-        for j in range(len(z)-1):
-            gridOff[j, i] /= (np.pi*(r[i+1]**2-r[i]**2)*(z[j+1]-z[j]))
-            gridOn[j, i] /= (np.pi*(r[i+1]**2-r[i]**2)*(z[j+1]-z[j]))
-            
+    startingPoints = [randomPointOnSphere(rLim) for _ in range(particles)]
+    directions = [randomPointOnSphere(1.) for _ in range(particles)]
+    
+    # Run simulations without magnetic ield 
+    start = time.time()
+    rReduced, zReduced, gridOff, _ = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
+    print('Time elapsed (s):', time.time()-start)
+    np.save('{}particles_no_accel.npy'.format(particles), [rReduced, zReduced, gridOff])
+    
+    # Run simulation with magnetic field
+    start = time.time()
+    rReduced, zReduced, gridOn, trappedOn = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
+    print('Time elapsed (s):', time.time()-start)
+    np.save('{}particles_accel.npy'.format(particles), [rReduced, zReduced, gridOn])
+    
     # Plot results
     themax = np.max([np.max(gridOn), np.max(gridOff)])
-    plt.figure(figsize=(9,6))
-    plt.subplot(131)
-    extent = [0, 20, -30, 30]
+    plt.figure(figsize=(18,12))
+    plt.subplot(231)
+    plt.title('B field off')
+    extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
     plt.imshow(gridOff, vmin=0, vmax=themax, extent=extent, cmap=plt.cm.jet)
-    # plt.xlim([0, 5])
-    # plt.ylim([-15, 15])
-    plt.colorbar(label='Particles/m^3')
+    plt.colorbar(label='Particles/$\mathregular{m^3}$')
+    plt.ylabel('Z (m)')
     
-    plt.subplot(132)
+    plt.subplot(232)
+    plt.title('B field on, 5 T contour')
     plt.imshow(gridOn, vmin=0, vmax=themax, extent=extent, cmap=plt.cm.jet)
-    # plt.xlim([0, 5])
-    # plt.ylim([-15, 15])
-    plt.colorbar(label='Particles/m^3')
-    plt.subplot(133)
-    plt.imshow((BR**2+BZ**2)**.5, extent=extent, cmap=plt.cm.jet, vmax=5)
-    # plt.xlim([0, 5])
-    # plt.ylim([-15, 15])
+    plt.colorbar(label='Particles/$\mathregular{m^3}$')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
+    
+    plt.subplot(233)
+    plt.title('(B on - B off)/(B off)')
+    gridDifference = 100*(gridOn-gridOff)/gridOff
+    bwr = plt.cm.bwr
+    bwr.set_bad((0, 0, 0, 1))
+    plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
+    plt.colorbar(label='Percent increase')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF') 
+    
+    plt.subplot(234)
+    plt.title('B field')
+    plt.imshow(Bmagnitude, extent=extent, cmap=plt.cm.jet, norm=matplotlib.colors.LogNorm())
     plt.colorbar(label='|B| (T)')
+    plt.ylabel('Z (m)')
+    plt.xlabel('R (m)')
+    
+    plt.subplot(235)
+    plt.title('B field on: trapped particles')
+    plt.imshow(trappedOn, extent=extent, cmap=plt.cm.jet)
+    plt.colorbar(label='Particles/$\mathregular{m^3}$')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
+    plt.xlabel('R (m)')
+    
+    plt.subplot(236)
+    plt.title('B field on: midplane profile')
+    plt.plot(rReduced, gridOn[len(zReduced)//2])
+    plt.ylabel('Particles/$\mathregular{m^3}$')
+    plt.xlabel('R (m)')
+    
     plt.tight_layout()
     plt.show()
     
-    # plt.figure()
-    # plt.plot(r[:150], gridOff[200:400,:150].sum(axis=0), label='No magnets')
-    # plt.plot(r[:150], gridOn[200:400,:150].sum(axis=0), label='Magnets')
-    # plt.ylabel('Particles/m^3')
-    # plt.xlabel('R (m)')
-    # plt.legend()
-    # plt.show()
-    
-    return r, z, gridOn, gridOff
-    
     
 @njit(parallel=True)
-def MCRK(zLim, rLim, v0, h, times, r, z, BR, BZ, accel):    
-    totalGrid = np.zeros(BR.shape)
-    qm = 1.60217662e-19/1.6726219e-27
-    for particleNumber in prange(10000):
-        if not particleNumber % 100:
+def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
+    totalGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+    trappedGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+    qm = q/m#1.60217662e-19/(58*1.6726219e-27)
+    rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
+    rDelta = rReduced[1]-rReduced[0]
+    rReduced += rDelta/2. # Use distance to cell centers to count particles
+    zReduced = np.linspace(np.min(z), np.max(z), len(z)//reductionFactor)
+    zDelta = zReduced[1]-zReduced[0]
+    zReduced += zDelta/2. # Use distance to cell centers to count particles
+    for particleNumber in prange(particles):
+        if not particleNumber % 1000:
             print(particleNumber)
-        particleGrid = np.zeros(BR.shape)
-        point1 = randomPointOnCylinder(rLim, zLim)
-        point2 = randomPointOnCylinder(rLim, zLim)
-        direction = point2-point1
-        direction /= np.linalg.norm(direction)
+        particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+        
+        # Generate random point and direction
+        point1 = startingPoints[particleNumber]
+        direction = directions[particleNumber]
+        trapped = True
         
         xv = np.zeros(6)
         xv[:3] = point1
         xv[3:] = direction*v0
         va = np.zeros(6)
         
-        for _ in times:
-            nr = nearestIndex(r, (xv[0]**2 + xv[1]**2)**.5)
-            nz = nearestIndex(z, xv[2])
-            if particleGrid[nz, nr] == 0:
-                particleGrid[nz, nr] = 1
+        for i in xrange(maxSteps):
+            particleR = (xv[0]**2 + xv[1]**2)**.5
+            nearestR = nearestIndex(rReduced, particleR)
+            nearestZ = nearestIndex(zReduced, xv[2])
+            if particleGrid[nearestZ, nearestR] == 0:
+                particleGrid[nearestZ, nearestR] = 1
             if accel:
                 k1 = h * acceleration(xv, va, qm, BR, BZ, r, z)
                 k2 = h * acceleration(xv + k1/2., va, qm, BR, BZ, r, z)
                 k3 = h * acceleration(xv + k2/2., va, qm, BR, BZ, r, z)
                 k4 = h * acceleration(xv + k3, va, qm, BR, BZ, r, z)
-                xv += 1./6.*(k1 + 2*k2 + 2*k3 + k4)
+                xv += 1./6.*(k1 + 2.*k2 + 2.*k3 + k4)
             else:
-                xv += np.array([xv[3]*h, xv[4]*h, xv[5]*h, 0, 0, 0])
+                xv[0] += xv[3]*h
+                xv[1] += xv[4]*h
+                xv[2] += xv[5]*h
             
             # If out of bounds
-            if math.fabs(xv[2]) > zLim or (xv[0]**2+xv[1]**2)**.5 > rLim:
+            if (particleR**2+xv[2]**2)**.5 > rLim: 
+                trapped = False
                 break
         totalGrid += particleGrid
-    return r, z, totalGrid
-
+        if trapped:
+            trappedGrid += particleGrid
+        
+    # Divide cell counts by volume of cell
+    for i in range(len(rReduced)):
+        for j in range(len(zReduced)):
+            volume = np.pi*((rReduced[i]+rDelta/2.)**2-(rReduced[i]-rDelta/2.)**2)*zDelta
+            totalGrid[j, i] /= volume
+            trappedGrid[j, i] /= volume
+    
+    return rReduced, zReduced, totalGrid, trappedGrid
+    
 
 def plotTrajectory(xv):
     """
@@ -384,26 +413,10 @@ def plotField():
     plt.show()
 
 
-def testInterpolate2d():
-    xMarkers = np.arange(-5, 5, 0.25)
-    yMarkers = np.arange(-2.5, 2.5, 0.25)
-    X, Y = np.meshgrid(xMarkers, yMarkers)
-    R = np.sqrt(X**2 + Y**2)
-    Z = np.sin(R)
-    
-    fig = plt.figure(figsize=(5, 5))
-    ax = fig.gca(projection='3d')
-    ax.plot_surface(X, Y, Z, antialiased=False, alpha=0.5)
-    xs = [np.random.uniform(-6, 6) for i in range(100)]
-    ys = [np.random.uniform(-4, 4) for i in range(100)]
-    zs = [interpolate2d(xMarkers, yMarkers, Z, x, y) for (x, y) in zip(xs, ys)]
-    ax.scatter(xs, ys, zs, color='red')
-    plt.show()
-
-
 @njit()
 def interpolate2d(xMarkers, yMarkers, zGrid, x, y):
     """
+    2D interpolation for a z array defined on an x, y grid.
     Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
     """
     xi1, xi2 = boundingIndices(xMarkers, x)
@@ -418,6 +431,30 @@ def interpolate2d(xMarkers, yMarkers, zGrid, x, y):
     R1 = ((x2 - x)/(x2 - x1))*zGrid[yi1, xi1] + ((x - x1)/(x2 - x1))*zGrid[yi1, xi2]
     R2 = ((x2 - x)/(x2 - x1))*zGrid[yi2, xi1] + ((x - x1)/(x2 - x1))*zGrid[yi2, xi2]
     return ((y2 - y)/(y2 - y1))*R1 + ((y - y1)/(y2 - y1))*R2
+    
+
+@njit()
+def interpolate2d2x(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
+    """
+    2D interpolation for two z arrays defined on the same x, y grid.
+    Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
+    """
+    xi1, xi2 = boundingIndices(xMarkers, x)
+    yi1, yi2 = boundingIndices(yMarkers, y)
+        
+    # If out of bounds, return closest point on boundary
+    if xi1 == xi2 or yi1 == yi2:
+        return zGrid1[yi1, xi1], zGrid2[yi1, xi1]
+        
+    x1, x2 = xMarkers[xi1], xMarkers[xi2]
+    y1, y2 = yMarkers[yi1], yMarkers[yi2]
+    c1, c2 = (x2 - x)/(x2 - x1), (x - x1)/(x2 - x1)
+    R11 = c1*zGrid1[yi1, xi1] + c2*zGrid1[yi1, xi2]
+    R21 = c1*zGrid1[yi2, xi1] + c2*zGrid1[yi2, xi2]
+    R12 = c1*zGrid2[yi1, xi1] + c2*zGrid2[yi1, xi2]
+    R22 = c1*zGrid2[yi2, xi1] + c2*zGrid2[yi2, xi2]
+    return ((y2 - y)/(y2 - y1))*R11 + ((y - y1)/(y2 - y1))*R21, \
+           ((y2 - y)/(y2 - y1))*R12 + ((y - y1)/(y2 - y1))*R22
     
 
 if __name__ == '__main__':
