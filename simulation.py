@@ -12,7 +12,8 @@ from numba import njit, prange
 import matplotlib
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from scipy.interpolate import griddata
+import scipy.interpolate, scipy.integrate
+import glob
 import math
 import time
 
@@ -98,7 +99,7 @@ def Bxyz(x_vec, BR, BZ, R, Z):
     return np.array([Bx, By, BZinterp])
 
 
-def fieldFunction(filename):
+def fieldGrid(filename):
     """
     Read COMSOL output file and return function B(r, z).
     """
@@ -111,7 +112,7 @@ def fieldFunction(filename):
     r = np.arange(np.min(vals[:,0]), np.max(vals[:,0]), .1)
     z = np.arange(np.min(vals[:,1]), np.max(vals[:,1]), .1)
     grid_r, grid_z = np.meshgrid(r, z)
-    grid = griddata(vals[:, :2], vals[:, 2], (grid_r, grid_z))
+    grid = scipy.interpolate.griddata(vals[:, :2], vals[:, 2], (grid_r, grid_z))
     return r, z, grid
 
      
@@ -130,7 +131,7 @@ def acceleration(xv, va, qm, BR, BZ, r, z):
 
 
 #@njit()
-def RKtrajectory():
+def RKtrajectory(BR, BZ):
     """
     Returns trajectory and velocity of particle in each timestep.
     """
@@ -190,6 +191,90 @@ def gyroPeriod(q, B, m):
     return 2*np.pi*m/(q*B)
     
     
+def getElementData(element):
+    """
+    Obtained from http://lpsc.in2p3.fr/crdb
+    """
+    energies = []
+    fluxes = []
+    for filename in glob.glob('GCRdata/{}/*.dat'.format(element)):
+        with open(filename, 'r') as f:
+            lines = f.read()
+        lines = lines.split('\n')
+        for line in lines:
+            # Ignore comments and newlines
+            if not '#' in line and len(line) > 1:
+                data = [float(d) for d in line.split()]
+                # Ignore 0 energies which cause log problems
+                if data[0] > 0:
+                    energies.append(data[0])
+                    fluxes.append(data[3])
+    return np.array(energies), np.array(fluxes)
+
+
+def getElementFunction(element):
+    """
+    Return min energy, max energy, and function (all log10).
+    """
+    energies, fluxes = getElementData(element)
+    fluxes = energies*fluxes
+    logEnergies = np.log10(energies)
+    logFluxes = np.log10(fluxes)
+    bins, samples = binnedAverage(logEnergies, logFluxes, bins=10)
+    f = scipy.interpolate.interp1d(bins, samples, kind='cubic')
+    return min(bins), max(bins), f
+
+
+def binnedAverage(x, y, bins=20):
+    xbins, step = np.linspace(np.min(x), np.max(x), num=bins, retstep=True)
+    xbins = (xbins + step/2)[:-1]
+    emptyBins = []
+    ymeans = []
+    for xbi, xb in enumerate(xbins):
+        ytotal = 0
+        ycount = 0
+        for y_i, y_ in enumerate(y):
+            if xb - step/2 < x[y_i] < xb + step/2:
+                ytotal += y_
+                ycount += 1
+        if ycount >= 1:
+            ymeans.append(ytotal/ycount)
+        else:
+            emptyBins.append(xbi)
+    xbins = np.delete(xbins, emptyBins)
+    return xbins, np.array(ymeans)
+    
+    
+def qmv(particleCount):
+    elements = ['H', 'He', 'C', 'O', 'Mg', 'Si', 'S', 'Ar', 'Ca', 'Fe']
+    u = 931.4941e6 # to eV/c^2
+    mDict = {'H': 1.008*u, 'He': 4.0026*u, 'C': 12.011*u, 'O': 15.999*u, 'Mg': 24.305*u, 
+             'Si': 28.085*u, 'S': 32.06*u, 'Ar': 39.948*u, 'Ca': 40.078*u, 'Fe': 55.845*u}
+    e = 1.60217662e-19
+    qDict = {'H': 1*e, 'He': 2*e, 'C': 6*e, 'O': 8*e, 'Mg': 12*e, 
+             'Si': 14*e, 'S': 16*e, 'Ar': 18*e, 'Ca': 20*e, 'Fe': 26*e}
+    elemBins = []
+    elemPDFs = []
+    elemIntegrals = []
+    for element in elements:
+        fmin, fmax, f = getElementFunction(element)
+        fx = np.linspace(fmin, fmax, 100)
+        fy = [10**f(fxi) for fxi in fx]
+        fy /= np.sum(fy)
+        
+        elemBins.append(fx)
+        elemPDFs.append(fy)
+        elemIntegrals.append(scipy.integrate.quad(lambda x: x*10**f(x), fmin, fmax)[0])
+
+    elemIntegrals /= np.sum(elemIntegrals)
+    elemChoices = [np.random.choice(elements, p=elemIntegrals) for _ in range(particleCount)]
+    qm = [qDict[e]/mDict[e] for e in elemChoices]
+    elemIndices = [elements.index(e) for e in elemChoices]
+    v = [KEtoSpeed(1e9*10**np.random.choice(elemBins[e], p=elemPDFs[e]), mDict[elements[e]]) 
+         for e in elemIndices]
+    return qm, v
+    
+    
 def monteCarlo():
     """
     Launch particles from uniformly random points on a sphere centered at dipole.
@@ -207,20 +292,27 @@ def monteCarlo():
     - Cluster computing
     - Plot of deviation with step size
     - Different geometries/simple dipole for surveys
+    
+    Speedup with GPU: https://pythonhosted.org/CudaPyInt
     """
     # B field in R and Z
-    r, z, BR = fieldFunction('Brs_LFhabitat.txt')
-    r, z, BZ = fieldFunction('Bzs_LFhabitat.txt')
-    import pdb; pdb.set_trace()
+    r, z, BRgdt = fieldGrid('Brs_noHabitat.txt')
+    _, _, BZgdt = fieldGrid('Bzs_noHabitat.txt')
+    _, _, BRhabitat = fieldGrid('Brs_noBDT_8MF.txt')
+    _, _, BZhabitat = fieldGrid('Bzs_noBDT_8MF.txt')
+    habitatDamper = 0.5
+    BR = BRgdt + habitatDamper * BRhabitat
+    BZ = BZgdt + habitatDamper * BZhabitat
+    
     Bmagnitude = (BR**2+BZ**2)**.5
     # Coarseness of the output R, Z flux grid
     reductionFactor = 10
     # Radius of spherical simulation boundary used for launching and exiting
-    rLim = 30
+    rLim = 40
     # Particle settings
     m = 1 * 1.6726219e-27 # kg *58 for iron
     q = 1 * 1.60217662e-19 # C *26 for iron
-    KE0 = 1e14 # eV
+    KE0 = 1e9 # eV
     v0 = KEtoSpeed(KE0, m*5.6095887e35) # m/s
     maxTime = rLim*3/v0
     # RK step size
@@ -244,17 +336,38 @@ def monteCarlo():
     
     # Run simulations without magnetic ield 
     start = time.time()
-    rReduced, zReduced, gridOff, _ = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
+    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
     print('Time elapsed (s):', time.time()-start)
     np.save('{}particles_no_accel.npy'.format(particles), [rReduced, zReduced, gridOff])
     
     # Run simulation with magnetic field
     start = time.time()
-    rReduced, zReduced, gridOn, trappedOn = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
+    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
     print('Time elapsed (s):', time.time()-start)
     np.save('{}particles_accel.npy'.format(particles), [rReduced, zReduced, gridOn])
+    print('GDT crossing change: {}%'.format(round(100*(GDTcrossingsOn-GDTcrossingsOff)/GDTcrossingsOff, 3)))
+    print('Habitat crossing change: {}%'.format(round(100*(habitatCrossingsOn-habitatCrossingsOff)/habitatCrossingsOff, 3)))
     
-    # Plot results
+    plotDiff(r, z, Bmagnitude, gridOn, gridOff)
+    # plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
+
+
+def plotDiff(r, z, Bmagnitude, gridOn, gridOff):    
+    plt.figure(figsize=(6,6))
+    plt.title('Flux change')
+    gridDifference = 100*(gridOn-gridOff)/gridOff
+    bwr = plt.cm.bwr
+    bwr.set_bad((0, 0, 0, 1))
+    extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
+    plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
+    plt.colorbar(label='Percent increase')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF') 
+    plt.xlabel('R (m)')
+    plt.ylabel('Z (m)')
+    plt.show()
+    
+    
+def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn):
     themax = np.max([np.max(gridOn), np.max(gridOff)])
     plt.figure(figsize=(18,12))
     plt.subplot(231)
@@ -314,10 +427,15 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
     zReduced = np.linspace(np.min(z), np.max(z), len(z)//reductionFactor)
     zDelta = zReduced[1]-zReduced[0]
     zReduced += zDelta/2. # Use distance to cell centers to count particles
+    
+    habitatCrossings = 0
+    GDTcrossings = 0
     for particleNumber in prange(particles):
-        if not particleNumber % 1000:
+        if not particleNumber % 10000:
             print(particleNumber)
         particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+        crossedHabitat = 0
+        crossedGDT = 0
         
         # Generate random point and direction
         point1 = startingPoints[particleNumber]
@@ -345,7 +463,11 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
                 xv[0] += xv[3]*h
                 xv[1] += xv[4]*h
                 xv[2] += xv[5]*h
-            
+                
+            if 10 < particleR < 14 and -2 < xv[2] < 2:
+                crossedHabitat = 1
+            if -14 < xv[2] < 14 and particleR < 5:
+                crossedGDT = 1
             # If out of bounds
             if (particleR**2+xv[2]**2)**.5 > rLim: 
                 trapped = False
@@ -353,6 +475,8 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
         totalGrid += particleGrid
         if trapped:
             trappedGrid += particleGrid
+        habitatCrossings += crossedHabitat
+        GDTcrossings += crossedGDT
         
     # Divide cell counts by volume of cell
     for i in range(len(rReduced)):
@@ -361,7 +485,7 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
             totalGrid[j, i] /= volume
             trappedGrid[j, i] /= volume
     
-    return rReduced, zReduced, totalGrid, trappedGrid
+    return rReduced, zReduced, totalGrid, trappedGrid, habitatCrossings, GDTcrossings
     
 
 def plotTrajectory(xv):
@@ -458,5 +582,4 @@ def interpolate2d2x(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
     
 
 if __name__ == '__main__':
-    # xv = RKtrajectory()
     monteCarlo()

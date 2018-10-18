@@ -1,0 +1,22 @@
+#        Mg
+#   file_name    number_data  exp_name
+files/362283856/data_exp1.dat       7      ACE-CRIS(1997/08-1998/04)
+files/362283856/data_exp2.dat       7      ACE-CRIS(2001/05-2003/09)
+files/362283856/data_exp3.dat       7      ACE-CRIS(2009/03-2010/01)
+files/362283856/data_exp4.dat       1      ALICE(1987/08+1987/08)
+files/362283856/data_exp5.dat       7      ATIC02(2003/01)
+files/362283856/data_exp6.dat       1      Balloon(1968/07)
+files/362283856/data_exp7.dat       6      Balloon(1971/09+1972/10)
+files/362283856/data_exp8.dat       9      Balloon(1972/10)
+files/362283856/data_exp9.dat       9      Balloon(1973/08)
+files/362283856/data_exp10.dat       7      Balloon(1974/07+1974/08+1976/09)
+files/362283856/data_exp11.dat       4      Balloon(1976/09)
+files/362283856/data_exp12.dat       7      Balloon(64/03-65/7)
+files/362283856/data_exp13.dat      10      CREAM-II(2005/12-2006/01)
+files/362283856/data_exp14.dat      11      CRISIS(1977/05)
+files/362283856/data_exp15.dat       5      CRN-Spacelab2(1985/07-1985/08)
+files/362283856/data_exp16.dat      13      HEAO3-C2(1979/10-1980/06)
+files/362283856/data_exp17.dat       3      OGO1(1964/10-1965/11)
+files/362283856/data_exp18.dat       3      OGO5(1968/03-1968/10)
+files/362283856/data_exp19.dat       8      TRACER03(2003/12)
+files/362283856/data_exp20.dat       4      TRACER99
