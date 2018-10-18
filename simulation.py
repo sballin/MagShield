@@ -296,10 +296,10 @@ def monteCarlo():
     Speedup with GPU: https://pythonhosted.org/CudaPyInt
     """
     # B field in R and Z
-    r, z, BRgdt = fieldGrid('Brs_noHabitat.txt')
-    _, _, BZgdt = fieldGrid('Bzs_noHabitat.txt')
-    _, _, BRhabitat = fieldGrid('Brs_noBDT_8MF.txt')
-    _, _, BZhabitat = fieldGrid('Bzs_noBDT_8MF.txt')
+    r, z, BRgdt = fieldGrid('fields/Brs_noHabitat.txt')
+    _, _, BZgdt = fieldGrid('fields/Bzs_noHabitat.txt')
+    _, _, BRhabitat = fieldGrid('fields/Brs_noBDT_8MF.txt')
+    _, _, BZhabitat = fieldGrid('fields/Bzs_noBDT_8MF.txt')
     habitatDamper = 0.5
     BR = BRgdt + habitatDamper * BRhabitat
     BZ = BZgdt + habitatDamper * BZhabitat
