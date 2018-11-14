@@ -1,59 +1,12 @@
-"""
-Test case: straight 1 T magnetic field and 1 GeV proton
-  Wolfram alpha: 1 GeV -> 2.6e8 m/s
-  r_g = mv_perp/eB = 1.6e-27 * 2.6e8/(1.6e-19 * 1) = 2.6 m
-  omega_g = eB/m = 1.6e-19 * 1 / 1.6e-27 = 10^8 rad/s
-  tau_g = 2pi/10^8 = 6.2e-8 s for a full turn
-"""
-
 from __future__ import print_function
 import numpy as np
 from numba import njit, prange
 import matplotlib
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import scipy.interpolate, scipy.integrate
 import glob
 import math
 import time
-
-
-def dipoleR(x_vec):
-    """
-    B in z direction, constant inside loop, falls off as r^3 outside.
-    Not a function of z.
-    """
-    x = x_vec[0] or 1e-3
-    y = x_vec[1] or 1e-3
-    z = x_vec[2] or 1e-3
-    loopRadius = .5
-    BonAxis = 10
-    r = (x**2 + y**2)**.5
-    if r < loopRadius:
-        return np.array([0., 0., BonAxis])
-    return np.array([0., 0., BonAxis * loopRadius**3/r**3])
-    
-    
-def dipoleRZ(x_vec):
-    """
-    Dipole field vector at given R, Z coordinates.
-    Currently not working.
-    """
-    x = x_vec[0] or 1e-3
-    y = x_vec[1] or 1e-3
-    z = x_vec[2] or 1e-3
-    r = (x**2 + y**2 + z**2)**.5
-    loopRadius = .5
-    BonAxis = 10
-    mu_0 = 1.25663706e-6
-    I = 2*loopRadius*BonAxis/mu_0
-    mu = I*np.pi*loopRadius**2 # magnetic moment
-    theta = np.arccos(z/r)
-    phi = np.arctan(y/x)
-    Bx = mu_0/(4*np.pi) * mu/r**3 * (2*np.cos(theta)*np.sin(theta)*np.cos(phi)+np.sin(theta)*np.cos(theta)*np.cos(phi))
-    By = mu_0/(4*np.pi) * mu/r**3 * (2*np.cos(theta)*np.sin(theta)*np.sin(phi)+np.sin(theta)*np.cos(theta)*np.sin(phi))
-    Bz = mu_0/(4*np.pi) * mu/r**3 * (2*np.cos(theta)*np.cos(theta)-np.sin(theta)*np.sin(theta))
-    return np.array([Bx, By, Bz])
 
 
 @njit()
@@ -130,7 +83,7 @@ def acceleration(xv, va, qm, BR, BZ, r, z):
     return va
 
 
-#@njit()
+@njit()
 def RKtrajectory(BR, BZ):
     """
     Returns trajectory and velocity of particle in each timestep.
@@ -140,7 +93,7 @@ def RKtrajectory(BR, BZ):
     times = np.arange(0, .5*6.2e-8, h)
     xv = np.zeros((len(times), 6))
     xv[0] = np.array([-3, 0, 0, 2.6e8, 0, 0])
-    for i in xrange(0, len(times)-1):
+    for i in range(0, len(times)-1):
         xvi = xv[i]
         k1 = h * acceleration(xvi, BR, BZ)
         k2 = h * acceleration(xvi + k1/2., BR, BZ)
@@ -166,16 +119,6 @@ def randomPointOnSphere(r):
     return point
     
     
-def axisEqual3D(ax):
-    extents = np.array([getattr(ax, 'get_{}lim'.format(dim))() for dim in 'xyz'])
-    sz = extents[:,1] - extents[:,0]
-    centers = np.mean(extents, axis=1)
-    maxsize = max(abs(sz))
-    r = maxsize/2
-    for ctr, dim in zip(centers, 'xyz'):
-        getattr(ax, 'set_{}lim'.format(dim))(ctr - r, ctr + r)
-        
-        
 def KEtoSpeed(KE, mass):
     """
     Relativistic formula to convert kinetic energy and mass (eV) to speed (m/s).
@@ -285,24 +228,22 @@ def monteCarlo():
     
     At each step add particle to tally of square cell in which it finds itself using modulo and index. (Investigate unique particles vs. total points.)
     
-    - Energy conservation, 
-    - End position after 2D scattering as a function of step size: make sure it converges
-    - Energy, mass spectrum
+    - End position after 2D scattering as a function of step size: plot it, make sure it converges
     - RK step size: smaller than r_L in currently seen field and smaller than inter-grid spacing
-    - Cluster computing
-    - Plot of deviation with step size
     - Different geometries/simple dipole for surveys
     
     Speedup with GPU: https://pythonhosted.org/CudaPyInt
     """
     # B field in R and Z
-    r, z, BRgdt = fieldGrid('fields/Brs_noHabitat.txt')
-    _, _, BZgdt = fieldGrid('fields/Bzs_noHabitat.txt')
-    _, _, BRhabitat = fieldGrid('fields/Brs_noBDT_8MF.txt')
-    _, _, BZhabitat = fieldGrid('fields/Bzs_noBDT_8MF.txt')
-    habitatDamper = 0.5
-    BR = BRgdt + habitatDamper * BRhabitat
-    BZ = BZgdt + habitatDamper * BZhabitat
+    #r, z, BRgdt = fieldGrid('fields/Brs_oct30_nohabitat.txt')
+    #_, _, BZgdt = fieldGrid('fields/Bzs_oct30_nohabitat.txt')
+    r, z, BRhabitat = fieldGrid('fields/Brs_oct30.txt')
+    _, _, BZhabitat = fieldGrid('fields/Bzs_oct30.txt')
+    habitatDamper = 1
+    # BR = BRgdt + habitatDamper * BRhabitat
+    # BZ = BZgdt + habitatDamper * BZhabitat
+    BR = habitatDamper * BRhabitat
+    BZ = habitatDamper * BZhabitat
     
     Bmagnitude = (BR**2+BZ**2)**.5
     # Coarseness of the output R, Z flux grid
@@ -316,9 +257,9 @@ def monteCarlo():
     v0 = KEtoSpeed(KE0, m*5.6095887e35) # m/s
     maxTime = rLim*3/v0
     # RK step size
-    h = 1e-11
+    h = 1e-11 # CHANGE
     # Number of particles to launch
-    particles = 100000
+    particles = 1000
     maxSteps = int(maxTime/h)
     
     # Print sanity check info
@@ -336,20 +277,23 @@ def monteCarlo():
     
     # Run simulations without magnetic ield 
     start = time.time()
-    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
+    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff, gridOffUnscaled, _ = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
     print('Time elapsed (s):', time.time()-start)
-    np.save('{}particles_no_accel.npy'.format(particles), [rReduced, zReduced, gridOff])
+    np.save('cache/{}particles_no_accel.npy'.format(particles), [rReduced, zReduced, gridOff])
     
     # Run simulation with magnetic field
     start = time.time()
-    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
+    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn, gridOnUnscaled, trappedOnUnscaled = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
     print('Time elapsed (s):', time.time()-start)
-    np.save('{}particles_accel.npy'.format(particles), [rReduced, zReduced, gridOn])
-    print('GDT crossing change: {}%'.format(round(100*(GDTcrossingsOn-GDTcrossingsOff)/GDTcrossingsOff, 3)))
-    print('Habitat crossing change: {}%'.format(round(100*(habitatCrossingsOn-habitatCrossingsOff)/habitatCrossingsOff, 3)))
+    np.save('cache/{}particles_accel.npy'.format(particles), [rReduced, zReduced, gridOn])
+    try:
+        print('GDT crossing change: {}%'.format(round(100*(GDTcrossingsOn-GDTcrossingsOff)/GDTcrossingsOff, 3)))
+        print('Habitat crossing change: {}%'.format(round(100*(habitatCrossingsOn-habitatCrossingsOff)/habitatCrossingsOff, 3)))
+    except Exception as e:
+        print(e)
     
     plotDiff(r, z, Bmagnitude, gridOn, gridOff)
-    # plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
+    # plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOnUnscaled, gridOffUnscaled, trappedOnUnscaled)
 
 
 def plotDiff(r, z, Bmagnitude, gridOn, gridOff):    
@@ -373,13 +317,13 @@ def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
     plt.subplot(231)
     plt.title('B field off')
     extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
-    plt.imshow(gridOff, vmin=0, vmax=themax, extent=extent, cmap=plt.cm.jet)
+    plt.imshow(gridOff, vmin=0, extent=extent, cmap=plt.cm.jet)
     plt.colorbar(label='Particles/$\mathregular{m^3}$')
     plt.ylabel('Z (m)')
     
     plt.subplot(232)
     plt.title('B field on, 5 T contour')
-    plt.imshow(gridOn, vmin=0, vmax=themax, extent=extent, cmap=plt.cm.jet)
+    plt.imshow(gridOn, vmin=0, extent=extent, cmap=plt.cm.jet)
     plt.colorbar(label='Particles/$\mathregular{m^3}$')
     plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
     
@@ -416,6 +360,16 @@ def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
     plt.show()
     
     
+@njit()
+def cross(a, b):
+    """
+    Numba does not support the np.cross function.
+    """
+    return np.array([a[1]*b[2] - a[2]*b[1], 
+                     a[2]*b[0] - a[0]*b[2], 
+                     a[0]*b[1] - a[1]*b[0]])
+    
+    
 @njit(parallel=True)
 def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
     totalGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
@@ -431,7 +385,7 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
     habitatCrossings = 0
     GDTcrossings = 0
     for particleNumber in prange(particles):
-        if not particleNumber % 10000:
+        if not particleNumber % 100000:
             print(particleNumber)
         particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
         crossedHabitat = 0
@@ -447,7 +401,7 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
         xv[3:] = direction*v0
         va = np.zeros(6)
         
-        for i in xrange(maxSteps):
+        for i in range(maxSteps):
             particleR = (xv[0]**2 + xv[1]**2)**.5
             nearestR = nearestIndex(rReduced, particleR)
             nearestZ = nearestIndex(zReduced, xv[2])
@@ -479,66 +433,196 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
         GDTcrossings += crossedGDT
         
     # Divide cell counts by volume of cell
+    totalGridUnscaled = totalGrid.copy()
+    trappedGridUnscaled = trappedGrid.copy()
     for i in range(len(rReduced)):
         for j in range(len(zReduced)):
             volume = np.pi*((rReduced[i]+rDelta/2.)**2-(rReduced[i]-rDelta/2.)**2)*zDelta
             totalGrid[j, i] /= volume
             trappedGrid[j, i] /= volume
     
-    return rReduced, zReduced, totalGrid, trappedGrid, habitatCrossings, GDTcrossings
+    return rReduced, zReduced, totalGrid, trappedGrid, habitatCrossings, GDTcrossings, totalGridUnscaled, trappedGridUnscaled
     
-
-def plotTrajectory(xv):
-    """
-    Show particle trajectory in 3D.
-    """
-    # Plot dipole as ring
-    u = np.linspace(0, 2*np.pi, num=100)
-    loopRadius = .5
-    x = loopRadius*np.sin(u)
-    y = loopRadius*np.cos(u)
-    z = np.zeros(100)
-
-    # Plot particle trajectories
-    fig = plt.figure(figsize=(5, 5))
-    ax = fig.gca(projection='3d')
-    ax.plot(xv[:,0], xv[:,1], xv[:,2])
-    ax.plot(x, y, z)
-
-    X = xv[:,0]
-    Y = xv[:,1]
-    Z = xv[:,2]
-    max_range = np.array([X.max()-X.min(), Y.max()-Y.min(), Z.max()-Z.min()]).max() / 2.0
-
-    mid_x = (X.max()+X.min()) * 0.5
-    mid_y = (Y.max()+Y.min()) * 0.5
-    mid_z = (Z.max()+Z.min()) * 0.5
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
-    ax.axis('equal')
-    ax.set_aspect('equal')
-    plt.show()
-
-
-def plotField():
-    """
-    Show field in 2D.
-    """
-    field = np.zeros((100,100))
-    z = np.linspace(-1, 1, num=100)
-    y = np.linspace(-1, 1, num=100)
-    for i in range(100):
-        for j in range(100):
-            field[i,j] = np.linalg.norm(Bxyz([.001, y[i], z[i]]))
-    plt.figure()
-    plt.imshow(field)
-    plt.colorbar()
-    plt.show()
-
-
+    
 @njit()
-def interpolate2d(xMarkers, yMarkers, zGrid, x, y):
+def BBRnext(x, u, B, E, qm, h):
+    """
+    Return updated x and v after a step of the Boris-Buneman algorithm with relativistic effects.
+     _         _                _             _
+    dx   _     u               du   q   _     u      _
+    -- = v = -----     and     -- = - ( E + ------ x B )
+    dt       gamma             dt   m       gamma
+    
+    Source: http://www.damtp.cam.ac.uk/user/tong/em/el4.pdf
+    """
+    c = 299792458
+    # U_minus 
+    uminus = u + qm*E*h*0.5
+
+    # To calculate gamma^n, instead of gamma^n-1/2, use gamma^2 = 1+(u-/c)^2
+    # xgm = (1 + (uminus[0]**2+uminus[1]**2+uminus[2]**2)/c**2 )**.5
+    xgm = 1
+
+    # T vector
+    Tv = qm*B*h*0.5/xgm
+    Tsq = Tv[0]**2+Tv[1]**2+Tv[2]**2
+
+    # S vector
+    Sv= 2.0*Tv/(1.0+Tsq)
+    # U_zero
+    uzero = uminus + cross(uminus, Tv)
+
+    # U_plus
+    uplus = uminus + cross(uzero, Sv)
+
+    # U^n+1/2
+    u = uplus + qm*E*h*0.5
+
+    # four-vector u(1),u(2),u(3) -> real velocity, beta, gamma. v^2=c^2 u^2 /(c^2+u^2),: ## ^n+1/2 ##
+    # 'XU (four velocity), XV (real velocity)'
+    xu = (u[0]**2+u[1]**2+u[2]**2)**.5
+    xv = c*xu/(c**2+xu**2)**.5
+    xbt = xv/c
+    # xgm = 1.0/(1.0-xbt**2)**.5
+    xgm = 1
+    v_next = u/xgm
+
+    # X^n+1
+    x_next = x + u/xgm*h
+    return x_next, v_next
+    
+@njit()
+def BBnext2(x, v, B, E, qm, dt):
+    t = qm*B*0.5*dt
+    t_mag_squared = t[0]*t[0] + t[1]*t[1] + t[2]*t[2]
+    s = 2*t/(1+t_mag_squared)
+    v_minus = v + qm*E*0.5*dt
+    v_prime = v_minus + cross(v_minus, t)
+    v_plus = v_minus + cross(v_prime, s)
+    # /*v n+1/2*/
+    v_next = v_plus + qm*E*0.5*dt
+    return x + v_next*dt, v_next
+    
+    
+@njit()
+def BBnext(x, v, B, E, qm, h):
+    """
+    Return next x and v after a step of the Boris-Buneman algorithm.
+    Source: https://doi.org/10.1063/1.4818428 equations 10 and 11
+    """
+    identity = np.identity(3)
+    omegahat_k = qm*h * np.array([ [  0,     -B[2],  B[1] ],
+                                     [  B[2],   0,     B[0] ],
+                                     [ -B[1],  -B[0],  0    ] ])
+    IplusOmegaInv = np.linalg.inv(identity+omegahat_k)
+    R = np.dot(IplusOmegaInv, identity-omegahat_k)
+    v_next = np.dot(R, v) + np.dot(IplusOmegaInv, E)*qm*h
+    x_next = x + 2*v_next*h
+    return x_next, v_next
+    
+    
+@njit()
+def accelerationConstantB(xv, B, qm):
+    va = np.zeros(6)
+    va[:3] = xv[3:]
+    va[3:] = qm*cross(xv[3:], B)
+    return va
+    
+        
+@njit()    
+def RKnext(x, v, B, E, qm, h):
+    """
+    Returns trajectory and velocity of particle in next timestep.
+    """
+    xvi = np.zeros(6)
+    xvi[:3] = x
+    xvi[3:] = v
+    k1 = h * accelerationConstantB(xvi, B, qm)
+    k2 = h * accelerationConstantB(xvi + k1/2., B, qm)
+    k3 = h * accelerationConstantB(xvi + k2/2., B, qm)
+    k4 = h * accelerationConstantB(xvi + k3, B, qm)
+    xvNext = xvi+1./6.*(k1 + 2*k2 + 2*k3 + k4)
+    return xvNext[:3], xvNext[3:]
+    
+    
+@njit(parallel=True)
+def MCBBR(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
+    totalGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+    trappedGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+    qm = q/m#1.60217662e-19/(58*1.6726219e-27)
+    rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
+    rDelta = rReduced[1]-rReduced[0]
+    rReduced += rDelta/2. # Use distance to cell centers to count particles
+    zReduced = np.linspace(np.min(z), np.max(z), len(z)//reductionFactor)
+    zDelta = zReduced[1]-zReduced[0]
+    zReduced += zDelta/2. # Use distance to cell centers to count particles
+    
+    habitatCrossings = 0
+    GDTcrossings = 0
+    for particleNumber in prange(particles):
+        if not particleNumber % 1000:
+            print(particleNumber)
+        particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+        crossedHabitat = 0
+        crossedGDT = 0
+        
+        trapped = True
+        
+        c = 299792458
+        E = np.zeros(3)
+        x = startingPoints[particleNumber]
+        v = directions[particleNumber]*v0
+        u = v*1.0/(1.0-(v0/c)**2)**.5
+        uplus = np.zeros(3)
+        uzero = np.zeros(3)
+        identity = np.ones(3)
+        
+        for i in range(maxSteps):
+            particleR = (x[0]**2 + x[1]**2)**.5
+            nearestR = nearestIndex(rReduced, particleR)
+            nearestZ = nearestIndex(zReduced, x[2])
+            if particleGrid[nearestZ, nearestR] == 0:
+                particleGrid[nearestZ, nearestR] = 1
+            if accel:
+                B = np.zeros(3) #Bxyz(x, BR, BZ, r, z)
+                
+                omega_k = B*qm*h/c
+                omegahat_k = np.array([[0, -B[2], B[1]],[B[2], 0, B[0]],[-B[1], -B[0], 0]]) # CHANGE
+                R = (identity+omegahat)
+                
+            else:
+                x[0] += v[0]*h
+                x[1] += v[1]*h
+                x[2] += v[2]*h
+                
+            if 10 < particleR < 14 and -2 < x[2] < 2:
+                crossedHabitat = 1
+            if -14 < x[2] < 14 and particleR < 5:
+                crossedGDT = 1
+            # If out of bounds
+            if (particleR**2+x[2]**2)**.5 > rLim: 
+                trapped = False
+                break
+        totalGrid += particleGrid
+        if trapped:
+            trappedGrid += particleGrid
+        habitatCrossings += crossedHabitat
+        GDTcrossings += crossedGDT
+        
+    totalGridUnscaled = totalGrid.copy()
+    trappedGridUnscaled = trappedGrid.copy()
+    # Divide cell counts by volume of cell
+    for i in range(len(rReduced)):
+        for j in range(len(zReduced)):
+            volume = np.pi*((rReduced[i]+rDelta/2.)**2-(rReduced[i]-rDelta/2.)**2)*zDelta
+            totalGrid[j, i] /= volume
+            trappedGrid[j, i] /= volume
+    
+    return rReduced, zReduced, totalGrid, trappedGrid, habitatCrossings, GDTcrossings, totalGridUnscaled, trappedGridUnscaled
+    
+    
+@njit()
+def interpolate2D(xMarkers, yMarkers, zGrid, x, y):
     """
     2D interpolation for a z array defined on an x, y grid.
     Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
@@ -555,12 +639,13 @@ def interpolate2d(xMarkers, yMarkers, zGrid, x, y):
     R1 = ((x2 - x)/(x2 - x1))*zGrid[yi1, xi1] + ((x - x1)/(x2 - x1))*zGrid[yi1, xi2]
     R2 = ((x2 - x)/(x2 - x1))*zGrid[yi2, xi1] + ((x - x1)/(x2 - x1))*zGrid[yi2, xi2]
     return ((y2 - y)/(y2 - y1))*R1 + ((y - y1)/(y2 - y1))*R2
-    
+
 
 @njit()
-def interpolate2d2x(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
+def interpolate2Dtwice(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
     """
-    2D interpolation for two z arrays defined on the same x, y grid.
+    Linear 2D interpolation for two z arrays defined on the same x, y grid.
+    Why twice? This method has is called many, many times.
     Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
     """
     xi1, xi2 = boundingIndices(xMarkers, x)
@@ -579,7 +664,16 @@ def interpolate2d2x(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
     R22 = c1*zGrid2[yi2, xi1] + c2*zGrid2[yi2, xi2]
     return ((y2 - y)/(y2 - y1))*R11 + ((y - y1)/(y2 - y1))*R21, \
            ((y2 - y)/(y2 - y1))*R12 + ((y - y1)/(y2 - y1))*R22
+           
+    
+def _flightCheck():
+    """
+    Make sure that basic things like interpolation are working.
+    Only do worked test cases.
+    """
+    pass
     
 
 if __name__ == '__main__':
+    flightCheck()
     monteCarlo()
