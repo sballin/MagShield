@@ -22,23 +22,7 @@ def nearestIndex(array, value):
 
 
 @njit()
-def boundingIndices(array, value):
-    """
-    Return index of closest and second closest matching values in array.
-    """
-    ni = nearestIndex(array, value)
-    if ni == 0 and value < array[ni]:
-        return 0, 0
-    elif ni == len(array)-1 and value > array[ni]:
-        return ni, ni
-    elif math.fabs(value-array[ni+1]) < math.fabs(value-array[ni-1]):
-        return ni, ni+1
-    else:
-        return ni-1, ni
-
-
-@njit()
-def boundingIndicesNoSearch(start, stop, step, value):
+def boundingIndices(start, stop, step, value):
     """
     Return indices of bounding values in a regularly spaced array.
     """
@@ -257,7 +241,7 @@ def monteCarlo():
     qms, vs = qmv(particles)
 
     # print('Simulation duration (s):', maxTime)
-    print('Timestep duration (s):', dt)
+    print('dt (s):', dt)
     # print('Initial speed (m/s):', v0)
     # rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
     # print('Time between output grid cell centers with speed v0 (s):', (rReduced[1]-rReduced[0])/v0)
@@ -529,8 +513,8 @@ def interpolate2D(xMarkers, yMarkers, zGrid, x, y):
     2D interpolation for a z array defined on an x, y grid.
     Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
     """
-    xi1, xi2 = boundingIndices(xMarkers, x)
-    yi1, yi2 = boundingIndices(yMarkers, y)
+    xi1, xi2 = boundingIndices(xMarkers[0], xMarkers[-1], xMarkers[1]-xMarkers[0], x)
+    yi1, yi2 = boundingIndices(yMarkers[0], yMarkers[-1], yMarkers[1]-yMarkers[0], y)
         
     # If out of bounds, return closest point on boundary
     if xi1 == xi2 or yi1 == yi2:
@@ -550,8 +534,8 @@ def interpolate2Dtwice(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
     Why twice? This method has is called many, many times.
     Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
     """
-    xi1, xi2 = boundingIndices(xMarkers, x)
-    yi1, yi2 = boundingIndices(yMarkers, y)
+    xi1, xi2 = boundingIndices(xMarkers[0], xMarkers[-1], xMarkers[1]-xMarkers[0], x)
+    yi1, yi2 = boundingIndices(yMarkers[0], yMarkers[-1], yMarkers[1]-yMarkers[0], y)
         
     # If out of bounds, return closest point on boundary
     if xi1 == xi2 or yi1 == yi2:
