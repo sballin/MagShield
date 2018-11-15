@@ -270,6 +270,25 @@ def compareUniformity():
         # count unique appearances in x and y bins and divide by z height
         pass
         
+
+def interpolate2D(xMarkers, yMarkers, zGrid, x, y):
+    """
+    2D interpolation for a z array defined on an x, y grid.
+    Source: http://supercomputingblog.com/graphics/coding-bilinear-interpolation
+    """
+    xi1, xi2 = simulation.boundingIndices(xMarkers[0], xMarkers[-1], xMarkers[1]-xMarkers[0], x)
+    yi1, yi2 = simulation.boundingIndices(yMarkers[0], yMarkers[-1], yMarkers[1]-yMarkers[0], y)
+        
+    # If out of bounds, return closest point on boundary
+    if xi1 == xi2 or yi1 == yi2:
+        return zGrid[yi1, xi1]
+        
+    x1, x2 = xMarkers[xi1], xMarkers[xi2]
+    y1, y2 = yMarkers[yi1], yMarkers[yi2]
+    R1 = ((x2 - x)/(x2 - x1))*zGrid[yi1, xi1] + ((x - x1)/(x2 - x1))*zGrid[yi1, xi2]
+    R2 = ((x2 - x)/(x2 - x1))*zGrid[yi2, xi1] + ((x - x1)/(x2 - x1))*zGrid[yi2, xi2]
+    return ((y2 - y)/(y2 - y1))*R1 + ((y - y1)/(y2 - y1))*R2
+        
         
 def testOrbit():
     """
