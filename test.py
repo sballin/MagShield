@@ -287,24 +287,25 @@ def testOrbit():
     gyroradius = v0/(qm*Bmagnitude)
     gyrofrequency = qm*Bmagnitude
     gyroperiod = 2*np.pi/gyrofrequency
-    h = gyroperiod/50 #1e-8
-    steps = 10*int(gyroperiod/h)
+    dt = gyroperiod/50 #1e-8
+    steps = 10*int(gyroperiod/dt)
     print('Radius (m):', gyroradius)
     print('Period (s):', gyroperiod)
     print('Steps:', steps)
-    print(h, h*v0)
+    print('dt:', dt, ', v0*dt', dt*v0)
     
     x = np.zeros((steps, 3))
-    x[0] = np.array([v0*h*.5, gyroradius, 0])
+    # x[0] = np.array([0, gyroradius, 0])
+    x[0] = np.array([v0*dt*.5, gyroradius, 0])
     vNext = np.array([v0, 0, 0])
+    print('Gamma:', simulation.gamma(vNext))
     B = np.array([0., 0, Bmagnitude])
     E = np.array([0., 0, 0])
     for i in range(steps-1):
-        x[i+1], vNext = simulation.BBnext(x[i], vNext, B, E, qm, h)
-    print(np.mean(x[:,0]), np.mean(x[:,1]))
+        x[i+1], vNext = simulation.BBnext(x[i], vNext, B, E, qm, dt)
     plt.figure(figsize=(7,7))
     # plt.plot((x[:,0]**2+x[:,1]**2)**.5); plt.xlabel('Steps'), plt.ylabel('Radius (m)') 
-    plt.xlabel('x (m)'); plt.ylabel('y (m)'); plt.axis('equal'); plt.gcf().gca().add_artist(plt.Circle((0,0), radius=gyroradius, color='red', fill=False)); plt.axis('equal');plt.scatter(x[:,0], x[:,1], c=range(steps), s=1, cmap=plt.cm.winter); plt.colorbar(label='Number of timesteps (%d per period)' % int(gyroperiod/h)); plt.title('BBR, Bz = 1 T, red = theoretical')
+    plt.xlabel('x (m)'); plt.ylabel('y (m)'); plt.axis('equal'); plt.gcf().gca().add_artist(plt.Circle((0,0), radius=gyroradius, color='red', fill=False)); plt.axis('equal');plt.scatter(x[:,0], x[:,1], c=range(steps), s=1, cmap=plt.cm.winter); plt.colorbar(label='Number of timesteps (%d per period)' % int(gyroperiod/dt)); plt.title('BBR, Bz = 1 T, red = theoretical')
     plt.show()
     
     

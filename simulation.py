@@ -246,22 +246,12 @@ def monteCarlo():
     # Radius of spherical simulation boundary used for launching and exiting
     rLim = 30
     # Particle settings
-    KE0 = 1e9 # eV
-    dt = 1e-11 # CHANGE
+    dt = 1e-10; print('dt (s):', dt)
 
     # Number of particles to launch
-    particles = 10000
+    particles = 100000
 
     qms, vs = qmv(particles)
-
-    # print('Simulation duration (s):', maxTime)
-    print('dt (s):', dt)
-    # print('Initial speed (m/s):', v0)
-    # rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
-    # print('Time between output grid cell centers with speed v0 (s):', (rReduced[1]-rReduced[0])/v0)
-    # print('Gyro-orbit in max field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.max(Bmagnitude), m), gyroPeriod(q, np.max(Bmagnitude), m)))
-    # print('Gyro-orbit in min field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.min(Bmagnitude), m), gyroPeriod(q, np.min(Bmagnitude), m)))
-    # print('Maximum number of timesteps:', maxSteps)
 
     startingPoints = [randomPointOnSphere(rLim) for _ in range(particles)]
     directions = [randomPointOnSphere(1.) for _ in range(particles)]
@@ -300,13 +290,16 @@ def MCRK(rLim, qms, vs, dt, r, z, BR, BZ, accel, particles, reductionFactor, sta
     
     habitatCrossings = 0
     GDTcrossings = 0
+    
     for particleNumber in prange(particles):
+        if not particleNumber % 1000:
+            print(particleNumber)
+            
         qm = qms[particleNumber]
         v0 = vs[particleNumber]
+        timeElapsed = 0
         maxTime = rLim * 3 / v0
         maxSteps = int(maxTime / dt)
-        if not particleNumber % 100000:
-            print(particleNumber)
         particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
         crossedHabitat = 0
         crossedGDT = 0
@@ -365,7 +358,7 @@ def MCRK(rLim, qms, vs, dt, r, z, BR, BZ, accel, particles, reductionFactor, sta
     
     
 @njit()
-def BBRnext(x, u, B, E, qm, h):
+def BBRnextFrancesco(x, u, B, E, qm, h):
     """
     Return updated x and v after a step of the Boris-Buneman algorithm with relativistic effects.
      _         _                _             _
@@ -376,36 +369,23 @@ def BBRnext(x, u, B, E, qm, h):
     Source: http://www.damtp.cam.ac.uk/user/tong/em/el4.pdf
     """
     c = 299792458
-    # U_minus 
     uminus = u + qm*E*h*0.5
-
     # To calculate gamma^n, instead of gamma^n-1/2, use gamma^2 = 1+(u-/c)^2
     xgm = (1 + (uminus[0]**2+uminus[1]**2+uminus[2]**2)/c**2 )**.5
-
-    # T vector
     Tv = qm*B*h*0.5/xgm
     Tsq = Tv[0]**2+Tv[1]**2+Tv[2]**2
-
-    # S vector
     Sv= 2.0*Tv/(1.0+Tsq)
-    # U_zero
     uzero = uminus + cross(uminus, Tv)
-
-    # U_plus
     uplus = uminus + cross(uzero, Sv)
-
     # U^n+1/2
     u = uplus + qm*E*h*0.5
-
     # four-vector u(1),u(2),u(3) -> real velocity, beta, gamma. v^2=c^2 u^2 /(c^2+u^2),: ## ^n+1/2 ##
     # 'XU (four velocity), XV (real velocity)'
     xu = (u[0]**2+u[1]**2+u[2]**2)**.5
     xv = c*xu/(c**2+xu**2)**.5
     xbt = xv/c
-    xgm = 1.0/(1.0-xbt**2)**.5
+    xgm = 1.0/(1.0-xbt**2)**.5 # this is v^n-1/2
     v_next = u/xgm
-
-    # X^n+1
     x_next = x + u/xgm*h
     return x_next, v_next
     
@@ -414,12 +394,15 @@ def BBRnext(x, u, B, E, qm, h):
 def BBnext(x, v, B, E, qm, dt):
     """
     Boris Buneman method. vNext is actually v_{n+1/2}, so need x[0] at t = 1/2 delta t. 
-    Source: https://www.particleincell.com/2011/vxb-rotation/
+    
+    Sources
+        Boris algorithm: https://www.particleincell.com/2011/vxb-rotation/
+        Relativistic correction to Boris algorithm: https://arxiv.org/abs/1710.09164
     """
-    t = qm*B*0.5*dt
+    vMinus = v + qm*E*0.5*dt
+    t = qm*B*0.5*dt/gamma(vMinus)
     tMagnitudeSquared = t[0]*t[0] + t[1]*t[1] + t[2]*t[2]
     s = 2*t/(1+tMagnitudeSquared)
-    vMinus = v + qm*E*0.5*dt
     vPrime = vMinus + cross(vMinus, t)
     vPlus = vMinus + cross(vPrime, s)
     vNext = vPlus + qm*E*0.5*dt
@@ -430,23 +413,30 @@ def BBnext(x, v, B, E, qm, dt):
 def accelerationConstantB(xv, B, qm):
     va = np.zeros(6)
     va[:3] = xv[3:]
-    va[3:] = qm*cross(xv[3:], B)
+    u = qm*cross(xv[3:], B)
+    va[3:] = u/gamma(va[:3])
     return va
+    
+    
+@njit()
+def gamma(v):
+    c = 299792458
+    return 1/(1-(v[0]**2+v[1]**2+v[2]**2)/c**2)**.5
     
         
 @njit()    
-def RKnext(x, v, B, E, qm, h):
+def RKnext(x, v, B, E, qm, dt):
     """
     Returns trajectory and velocity of particle in next timestep.
     """
     xvi = np.zeros(6)
     xvi[:3] = x
     xvi[3:] = v
-    k1 = h * accelerationConstantB(xvi, B, qm)
-    k2 = h * accelerationConstantB(xvi + k1/2., B, qm)
-    k3 = h * accelerationConstantB(xvi + k2/2., B, qm)
-    k4 = h * accelerationConstantB(xvi + k3, B, qm)
-    xvNext = xvi+1./6.*(k1 + 2*k2 + 2*k3 + k4)
+    k1 = dt * accelerationConstantB(xvi,         B, qm)
+    k2 = dt * accelerationConstantB(xvi + k1/2., B, qm)
+    k3 = dt * accelerationConstantB(xvi + k2/2., B, qm)
+    k4 = dt * accelerationConstantB(xvi + k3,    B, qm)
+    xvNext = xvi+1./6.*(k1 + 2*k2 + 2*k3 + k4) # [x,v] + dt*[v,a]
     return xvNext[:3], xvNext[3:]
     
     
