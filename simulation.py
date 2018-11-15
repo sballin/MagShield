@@ -21,7 +21,7 @@ def nearestIndex(array, value):
     return idx
 
 
-@njit()   
+@njit()
 def boundingIndices(array, value):
     """
     Return index of closest and second closest matching values in array.
@@ -35,6 +35,31 @@ def boundingIndices(array, value):
         return ni, ni+1
     else:
         return ni-1, ni
+
+
+@njit()
+def boundingIndicesNoSearch(start, stop, step, value):
+    """
+    Return indices of bounding values in a regularly spaced array.
+    """
+    if value < start:
+        return 0, 0
+    elif value > stop:
+        stopIndex = int((stop - start)/step)
+        return stopIndex, stopIndex
+    else:
+        lowerIndex = int((value - start)/step)
+        return lowerIndex, lowerIndex+1
+
+
+@njit()
+def cross(a, b):
+    """
+    Numba does not support the np.cross function.
+    """
+    return np.array([a[1]*b[2] - a[2]*b[1],
+                     a[2]*b[0] - a[0]*b[2],
+                     a[0]*b[1] - a[1]*b[0]])
 
 
 @njit()
@@ -168,9 +193,10 @@ def binnedAverage(x, y, bins=20):
     
 def qmv(particleCount):
     elements = ['H', 'He', 'C', 'O', 'Mg', 'Si', 'S', 'Ar', 'Ca', 'Fe']
-    u = 931.4941e6 # to eV/c^2
-    mDict = {'H': 1.008*u, 'He': 4.0026*u, 'C': 12.011*u, 'O': 15.999*u, 'Mg': 24.305*u, 
-             'Si': 28.085*u, 'S': 32.06*u, 'Ar': 39.948*u, 'Ca': 40.078*u, 'Fe': 55.845*u}
+    uToKg = 1.660539e-27 # kg
+    uToEV = 931.4941e6 # eV/c^2
+    mDict = {'H': 1.008, 'He': 4.0026, 'C': 12.011, 'O': 15.999, 'Mg': 24.305,
+             'Si': 28.085, 'S': 32.06, 'Ar': 39.948, 'Ca': 40.078, 'Fe': 55.845}
     e = 1.60217662e-19
     qDict = {'H': 1*e, 'He': 2*e, 'C': 6*e, 'O': 8*e, 'Mg': 12*e, 
              'Si': 14*e, 'S': 16*e, 'Ar': 18*e, 'Ca': 20*e, 'Fe': 26*e}
@@ -189,12 +215,12 @@ def qmv(particleCount):
 
     elemIntegrals /= np.sum(elemIntegrals)
     elemChoices = [np.random.choice(elements, p=elemIntegrals) for _ in range(particleCount)]
-    qm = [qDict[e]/mDict[e] for e in elemChoices]
+    qm = [qDict[e]/(mDict[e]*uToKg) for e in elemChoices]
     elemIndices = [elements.index(e) for e in elemChoices]
-    v = [KEtoSpeed(1e9*10**np.random.choice(elemBins[e], p=elemPDFs[e]), mDict[elements[e]]) 
-         for e in elemIndices]
+    v = [KEtoSpeed(1e9*10**np.random.choice(elemBins[e], p=elemPDFs[e]), 
+                   mDict[elements[e]]*uToEV) for e in elemIndices]
     return qm, v
-    
+
     
 def monteCarlo():
     """
@@ -213,55 +239,44 @@ def monteCarlo():
     Speedup with GPU: https://pythonhosted.org/CudaPyInt
     """
     # B field in R and Z
-    #r, z, BRgdt = fieldGrid('fields/Brs_oct30_nohabitat.txt')
-    #_, _, BZgdt = fieldGrid('fields/Bzs_oct30_nohabitat.txt')
-    r, z, BRhabitat = fieldGrid('fields/Brs_oct30.txt')
-    _, _, BZhabitat = fieldGrid('fields/Bzs_oct30.txt')
-    habitatDamper = 1
-    # BR = BRgdt + habitatDamper * BRhabitat
-    # BZ = BZgdt + habitatDamper * BZhabitat
-    BR = habitatDamper * BRhabitat
-    BZ = habitatDamper * BZhabitat
-    
+    r, z, BR = fieldGrid('fields/Brs_oct30.txt')
+    _, _, BZ = fieldGrid('fields/Bzs_oct30.txt')
     Bmagnitude = (BR**2+BZ**2)**.5
+
     # Coarseness of the output R, Z flux grid
-    reductionFactor = 10
+    reductionFactor = 1
     # Radius of spherical simulation boundary used for launching and exiting
-    rLim = 40
+    rLim = 30
     # Particle settings
-    m = 1 * 1.6726219e-27 # kg *58 for iron
-    q = 1 * 1.60217662e-19 # C *26 for iron
     KE0 = 1e9 # eV
-    v0 = KEtoSpeed(KE0, m*5.6095887e35) # m/s
-    maxTime = rLim*3/v0
-    # RK step size
-    h = 1e-11 # CHANGE
+    dt = 1e-11 # CHANGE
+
     # Number of particles to launch
-    particles = 1000
-    maxSteps = int(maxTime/h)
-    
-    # Print sanity check info
-    print('Simulation duration (s):', maxTime)
-    print('Timestep duration (s):', h)
-    rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
-    print('Initial speed (m/s):', v0)
-    print('Time between output grid cell centers with speed v0 (s):', (rReduced[1]-rReduced[0])/v0)
-    print('Gyro-orbit in max field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.max(Bmagnitude), m), gyroPeriod(q, np.max(Bmagnitude), m)))
-    print('Gyro-orbit in min field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.min(Bmagnitude), m), gyroPeriod(q, np.min(Bmagnitude), m)))
-    print('Maximum number of timesteps:', maxSteps)
-    
+    particles = 10000
+
+    qms, vs = qmv(particles)
+
+    # print('Simulation duration (s):', maxTime)
+    print('Timestep duration (s):', dt)
+    # print('Initial speed (m/s):', v0)
+    # rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
+    # print('Time between output grid cell centers with speed v0 (s):', (rReduced[1]-rReduced[0])/v0)
+    # print('Gyro-orbit in max field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.max(Bmagnitude), m), gyroPeriod(q, np.max(Bmagnitude), m)))
+    # print('Gyro-orbit in min field: radius {} m, period {} s'.format(gyroRadius(v0, q, np.min(Bmagnitude), m), gyroPeriod(q, np.min(Bmagnitude), m)))
+    # print('Maximum number of timesteps:', maxSteps)
+
     startingPoints = [randomPointOnSphere(rLim) for _ in range(particles)]
     directions = [randomPointOnSphere(1.) for _ in range(particles)]
-    
-    # Run simulations without magnetic ield 
+
+    # Run simulations without magnetic field
     start = time.time()
-    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff, gridOffUnscaled, _ = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
+    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff, gridOffUnscaled, _ = MCRK(rLim, qms, vs, dt, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
     print('Time elapsed (s):', time.time()-start)
     np.save('cache/{}particles_no_accel.npy'.format(particles), [rReduced, zReduced, gridOff])
     
     # Run simulation with magnetic field
     start = time.time()
-    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn, gridOnUnscaled, trappedOnUnscaled = MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
+    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn, gridOnUnscaled, trappedOnUnscaled = MCRK(rLim, qms, vs, dt, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
     print('Time elapsed (s):', time.time()-start)
     np.save('cache/{}particles_accel.npy'.format(particles), [rReduced, zReduced, gridOn])
     try:
@@ -270,89 +285,14 @@ def monteCarlo():
     except Exception as e:
         print(e)
     
-    plotDiff(r, z, Bmagnitude, gridOn, gridOff)
-    # plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOnUnscaled, gridOffUnscaled, trappedOnUnscaled)
-
-
-def plotDiff(r, z, Bmagnitude, gridOn, gridOff):    
-    plt.figure(figsize=(6,6))
-    plt.title('Flux change')
-    gridDifference = 100*(gridOn-gridOff)/gridOff
-    bwr = plt.cm.bwr
-    bwr.set_bad((0, 0, 0, 1))
-    extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
-    plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
-    plt.colorbar(label='Percent increase')
-    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF') 
-    plt.xlabel('R (m)')
-    plt.ylabel('Z (m)')
-    plt.show()
-    
-    
-def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn):
-    themax = np.max([np.max(gridOn), np.max(gridOff)])
-    plt.figure(figsize=(18,12))
-    plt.subplot(231)
-    plt.title('B field off')
-    extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
-    plt.imshow(gridOff, vmin=0, extent=extent, cmap=plt.cm.jet)
-    plt.colorbar(label='Particles/$\mathregular{m^3}$')
-    plt.ylabel('Z (m)')
-    
-    plt.subplot(232)
-    plt.title('B field on, 5 T contour')
-    plt.imshow(gridOn, vmin=0, extent=extent, cmap=plt.cm.jet)
-    plt.colorbar(label='Particles/$\mathregular{m^3}$')
-    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
-    
-    plt.subplot(233)
-    plt.title('(B on - B off)/(B off)')
-    gridDifference = 100*(gridOn-gridOff)/gridOff
-    bwr = plt.cm.bwr
-    bwr.set_bad((0, 0, 0, 1))
-    plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
-    plt.colorbar(label='Percent increase')
-    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF') 
-    
-    plt.subplot(234)
-    plt.title('B field')
-    plt.imshow(Bmagnitude, extent=extent, cmap=plt.cm.jet, norm=matplotlib.colors.LogNorm())
-    plt.colorbar(label='|B| (T)')
-    plt.ylabel('Z (m)')
-    plt.xlabel('R (m)')
-    
-    plt.subplot(235)
-    plt.title('B field on: trapped particles')
-    plt.imshow(trappedOn, extent=extent, cmap=plt.cm.jet)
-    plt.colorbar(label='Particles/$\mathregular{m^3}$')
-    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
-    plt.xlabel('R (m)')
-    
-    plt.subplot(236)
-    plt.title('B field on: midplane profile')
-    plt.plot(rReduced, gridOn[len(zReduced)//2])
-    plt.ylabel('Particles/$\mathregular{m^3}$')
-    plt.xlabel('R (m)')
-    
-    plt.tight_layout()
-    plt.show()
-    
-    
-@njit()
-def cross(a, b):
-    """
-    Numba does not support the np.cross function.
-    """
-    return np.array([a[1]*b[2] - a[2]*b[1], 
-                     a[2]*b[0] - a[0]*b[2], 
-                     a[0]*b[1] - a[1]*b[0]])
+    # plotDiff(r, z, Bmagnitude, gridOn, gridOff)
+    plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOnUnscaled, gridOffUnscaled, trappedOnUnscaled)
     
     
 @njit(parallel=True)
-def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
+def MCRK(rLim, qms, vs, dt, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
     totalGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
     trappedGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
-    qm = q/m#1.60217662e-19/(58*1.6726219e-27)
     rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
     rDelta = rReduced[1]-rReduced[0]
     rReduced += rDelta/2. # Use distance to cell centers to count particles
@@ -363,6 +303,10 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
     habitatCrossings = 0
     GDTcrossings = 0
     for particleNumber in prange(particles):
+        qm = qms[particleNumber]
+        v0 = vs[particleNumber]
+        maxTime = rLim * 3 / v0
+        maxSteps = int(maxTime / dt)
         if not particleNumber % 100000:
             print(particleNumber)
         particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
@@ -378,7 +322,7 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
         xv[:3] = point1
         xv[3:] = direction*v0
         va = np.zeros(6)
-        
+
         for i in range(maxSteps):
             particleR = (xv[0]**2 + xv[1]**2)**.5
             nearestR = nearestIndex(rReduced, particleR)
@@ -386,15 +330,15 @@ def MCRK(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionF
             if particleGrid[nearestZ, nearestR] == 0:
                 particleGrid[nearestZ, nearestR] = 1
             if accel:
-                k1 = h * acceleration(xv, va, qm, BR, BZ, r, z)
-                k2 = h * acceleration(xv + k1/2., va, qm, BR, BZ, r, z)
-                k3 = h * acceleration(xv + k2/2., va, qm, BR, BZ, r, z)
-                k4 = h * acceleration(xv + k3, va, qm, BR, BZ, r, z)
+                k1 = dt * acceleration(xv, va, qm, BR, BZ, r, z)
+                k2 = dt * acceleration(xv + k1/2., va, qm, BR, BZ, r, z)
+                k3 = dt * acceleration(xv + k2/2., va, qm, BR, BZ, r, z)
+                k4 = dt * acceleration(xv + k3, va, qm, BR, BZ, r, z)
                 xv += 1./6.*(k1 + 2.*k2 + 2.*k3 + k4)
             else:
-                xv[0] += xv[3]*h
-                xv[1] += xv[4]*h
-                xv[2] += xv[5]*h
+                xv[0] += xv[3]*dt
+                xv[1] += xv[4]*dt
+                xv[2] += xv[5]*dt
                 
             if 10 < particleR < 14 and -2 < xv[2] < 2:
                 crossedHabitat = 1
@@ -438,8 +382,7 @@ def BBRnext(x, u, B, E, qm, h):
     uminus = u + qm*E*h*0.5
 
     # To calculate gamma^n, instead of gamma^n-1/2, use gamma^2 = 1+(u-/c)^2
-    # xgm = (1 + (uminus[0]**2+uminus[1]**2+uminus[2]**2)/c**2 )**.5
-    xgm = 1
+    xgm = (1 + (uminus[0]**2+uminus[1]**2+uminus[2]**2)/c**2 )**.5
 
     # T vector
     Tv = qm*B*h*0.5/xgm
@@ -461,8 +404,7 @@ def BBRnext(x, u, B, E, qm, h):
     xu = (u[0]**2+u[1]**2+u[2]**2)**.5
     xv = c*xu/(c**2+xu**2)**.5
     xbt = xv/c
-    # xgm = 1.0/(1.0-xbt**2)**.5
-    xgm = 1
+    xgm = 1.0/(1.0-xbt**2)**.5
     v_next = u/xgm
 
     # X^n+1
@@ -511,7 +453,7 @@ def RKnext(x, v, B, E, qm, h):
     
     
 @njit(parallel=True)
-def MCBBR(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
+def MCBBR(rLim, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
     totalGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
     trappedGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
     qm = q/m#1.60217662e-19/(58*1.6726219e-27)
@@ -624,6 +566,70 @@ def interpolate2Dtwice(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
     R22 = c1*zGrid2[yi2, xi1] + c2*zGrid2[yi2, xi2]
     return ((y2 - y)/(y2 - y1))*R11 + ((y - y1)/(y2 - y1))*R21, \
            ((y2 - y)/(y2 - y1))*R12 + ((y - y1)/(y2 - y1))*R22
+
+
+def plotDiff(r, z, Bmagnitude, gridOn, gridOff):
+    plt.figure(figsize=(6, 6))
+    plt.title('Flux change')
+    gridDifference = 100 * (gridOn - gridOff) / gridOff
+    bwr = plt.cm.bwr
+    bwr.set_bad((0, 0, 0, 1))
+    extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
+    plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
+    plt.colorbar(label='Percent increase')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF')
+    plt.xlabel('R (m)')
+    plt.ylabel('Z (m)')
+    plt.show()
+
+
+def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn):
+    themax = np.max([np.max(gridOn), np.max(gridOff)])
+    plt.figure(figsize=(18, 12))
+    plt.subplot(231)
+    plt.title('B field off')
+    extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
+    plt.imshow(gridOff, vmin=0, extent=extent, cmap=plt.cm.jet)
+    plt.colorbar(label='Particles/$\mathregular{m^3}$')
+    plt.ylabel('Z (m)')
+
+    plt.subplot(232)
+    plt.title('B field on, 5 T contour')
+    plt.imshow(gridOn, vmin=0, extent=extent, cmap=plt.cm.jet)
+    plt.colorbar(label='Particles/$\mathregular{m^3}$')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
+
+    plt.subplot(233)
+    plt.title('(B on - B off)/(B off)')
+    gridDifference = 100 * (gridOn - gridOff) / gridOff
+    bwr = plt.cm.bwr
+    bwr.set_bad((0, 0, 0, 1))
+    plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
+    plt.colorbar(label='Percent increase')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF')
+
+    plt.subplot(234)
+    plt.title('B field')
+    plt.imshow(Bmagnitude, extent=extent, cmap=plt.cm.jet, norm=matplotlib.colors.LogNorm())
+    plt.colorbar(label='|B| (T)')
+    plt.ylabel('Z (m)')
+    plt.xlabel('R (m)')
+
+    plt.subplot(235)
+    plt.title('B field on: trapped particles')
+    plt.imshow(trappedOn, extent=extent, cmap=plt.cm.jet)
+    plt.colorbar(label='Particles/$\mathregular{m^3}$')
+    plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
+    plt.xlabel('R (m)')
+
+    plt.subplot(236)
+    plt.title('B field on: midplane profile')
+    plt.plot(rReduced, gridOn[len(zReduced) // 2])
+    plt.ylabel('Particles/$\mathregular{m^3}$')
+    plt.xlabel('R (m)')
+
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == '__main__':
