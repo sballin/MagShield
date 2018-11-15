@@ -13,12 +13,27 @@ import time
 def nearestIndex(array, value):
     """
     Return index of closest matching value in array.
-    Data must be sorted.
+    Data must be sorted but can be irregularly spaced.
     """
     idx = np.searchsorted(array, value, side="left")
     if idx > 0 and (idx == len(array) or math.fabs(value - array[idx-1]) < math.fabs(value - array[idx])):
         return idx-1
     return idx
+    
+    
+@njit()
+def nearestIndexNoSearch(start, stop, step, value):
+    """
+    TODO: Why is performance here bad?
+    """
+    if value < start:
+        return 0
+    elif value > stop:
+        return int((stop - start)/step)
+    index = int((value - start)/step)
+    if value - (start + step*index) > step/2:
+        index += 1
+    return index
 
 
 @njit()
@@ -31,9 +46,8 @@ def boundingIndices(start, stop, step, value):
     elif value > stop:
         stopIndex = int((stop - start)/step)
         return stopIndex, stopIndex
-    else:
-        lowerIndex = int((value - start)/step)
-        return lowerIndex, lowerIndex+1
+    lowerIndex = int((value - start)/step)
+    return lowerIndex, lowerIndex+1
 
 
 @njit()
