@@ -300,9 +300,9 @@ def testOrbit():
     B = np.array([0., 0, Bmagnitude])
     E = np.array([0., 0, 0])
     for i in range(steps-1):
-        x[i+1], vNext = simulation.BBnext2(x[i], vNext, B, E, qm, h)
+        x[i+1], vNext = simulation.BBnext(x[i], vNext, B, E, qm, h)
     print(np.mean(x[:,0]), np.mean(x[:,1]))
-    plt.figure(figsize=(5,5))
+    plt.figure(figsize=(7,7))
     # plt.plot((x[:,0]**2+x[:,1]**2)**.5); plt.xlabel('Steps'), plt.ylabel('Radius (m)') 
     plt.xlabel('x (m)'); plt.ylabel('y (m)'); plt.axis('equal'); plt.gcf().gca().add_artist(plt.Circle((0,0), radius=gyroradius, color='red', fill=False)); plt.axis('equal');plt.scatter(x[:,0], x[:,1], c=range(steps), s=1, cmap=plt.cm.winter); plt.colorbar(label='Number of timesteps (%d per period)' % int(gyroperiod/h)); plt.title('BBR, Bz = 1 T, red = theoretical')
     plt.show()

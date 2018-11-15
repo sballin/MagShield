@@ -45,7 +45,7 @@ def Bxyz(x_vec, BR, BZ, R, Z):
     x, y, z = x_vec[:3]
     r = (x**2 + y**2)**.5
 
-    BRinterp, BZinterp = interpolate2d2x(R, Z, BR, BZ, r, z)
+    BRinterp, BZinterp = interpolate2Dtwice(R, Z, BR, BZ, r, z)
     
     Bx = BRinterp * x/r
     By = BRinterp * y/r
@@ -83,28 +83,6 @@ def acceleration(xv, va, qm, BR, BZ, r, z):
     return va
 
 
-@njit()
-def RKtrajectory(BR, BZ):
-    """
-    Returns trajectory and velocity of particle in each timestep.
-    """
-    # Initial conditions 
-    h = 1e-11
-    times = np.arange(0, .5*6.2e-8, h)
-    xv = np.zeros((len(times), 6))
-    xv[0] = np.array([-3, 0, 0, 2.6e8, 0, 0])
-    for i in range(0, len(times)-1):
-        xvi = xv[i]
-        k1 = h * acceleration(xvi, BR, BZ)
-        k2 = h * acceleration(xvi + k1/2., BR, BZ)
-        k3 = h * acceleration(xvi + k2/2., BR, BZ)
-        k4 = h * acceleration(xvi + k3, BR, BZ)
-        xv[i+1] = xvi+1./6.*(k1 + 2*k2 + 2*k3 + k4)
-        if outOfDomain(x):
-            break
-    return xv
-    
-    
 @njit()
 def randomPointOnSphere(r):
     """
@@ -491,34 +469,21 @@ def BBRnext(x, u, B, E, qm, h):
     x_next = x + u/xgm*h
     return x_next, v_next
     
+    
 @njit()
-def BBnext2(x, v, B, E, qm, dt):
+def BBnext(x, v, B, E, qm, dt):
+    """
+    Boris Buneman method. vNext is actually v_{n+1/2}, so need x[0] at t = 1/2 delta t. 
+    Source: https://www.particleincell.com/2011/vxb-rotation/
+    """
     t = qm*B*0.5*dt
-    t_mag_squared = t[0]*t[0] + t[1]*t[1] + t[2]*t[2]
-    s = 2*t/(1+t_mag_squared)
-    v_minus = v + qm*E*0.5*dt
-    v_prime = v_minus + cross(v_minus, t)
-    v_plus = v_minus + cross(v_prime, s)
-    # /*v n+1/2*/
-    v_next = v_plus + qm*E*0.5*dt
-    return x + v_next*dt, v_next
-    
-    
-@njit()
-def BBnext(x, v, B, E, qm, h):
-    """
-    Return next x and v after a step of the Boris-Buneman algorithm.
-    Source: https://doi.org/10.1063/1.4818428 equations 10 and 11
-    """
-    identity = np.identity(3)
-    omegahat_k = qm*h * np.array([ [  0,     -B[2],  B[1] ],
-                                     [  B[2],   0,     B[0] ],
-                                     [ -B[1],  -B[0],  0    ] ])
-    IplusOmegaInv = np.linalg.inv(identity+omegahat_k)
-    R = np.dot(IplusOmegaInv, identity-omegahat_k)
-    v_next = np.dot(R, v) + np.dot(IplusOmegaInv, E)*qm*h
-    x_next = x + 2*v_next*h
-    return x_next, v_next
+    tMagnitudeSquared = t[0]*t[0] + t[1]*t[1] + t[2]*t[2]
+    s = 2*t/(1+tMagnitudeSquared)
+    vMinus = v + qm*E*0.5*dt
+    vPrime = vMinus + cross(vMinus, t)
+    vPlus = vMinus + cross(vPrime, s)
+    vNext = vPlus + qm*E*0.5*dt
+    return x + vNext*dt, vNext
     
     
 @njit()
@@ -567,7 +532,7 @@ def MCBBR(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reduction
         crossedGDT = 0
         
         trapped = True
-        
+
         c = 299792458
         E = np.zeros(3)
         x = startingPoints[particleNumber]
@@ -585,11 +550,6 @@ def MCBBR(rLim, v0, q, m, h, maxSteps, r, z, BR, BZ, accel, particles, reduction
                 particleGrid[nearestZ, nearestR] = 1
             if accel:
                 B = np.zeros(3) #Bxyz(x, BR, BZ, r, z)
-                
-                omega_k = B*qm*h/c
-                omegahat_k = np.array([[0, -B[2], B[1]],[B[2], 0, B[0]],[-B[1], -B[0], 0]]) # CHANGE
-                R = (identity+omegahat)
-                
             else:
                 x[0] += v[0]*h
                 x[1] += v[1]*h
@@ -664,16 +624,7 @@ def interpolate2Dtwice(xMarkers, yMarkers, zGrid1, zGrid2, x, y):
     R22 = c1*zGrid2[yi2, xi1] + c2*zGrid2[yi2, xi2]
     return ((y2 - y)/(y2 - y1))*R11 + ((y - y1)/(y2 - y1))*R21, \
            ((y2 - y)/(y2 - y1))*R12 + ((y - y1)/(y2 - y1))*R22
-           
-    
-def _flightCheck():
-    """
-    Make sure that basic things like interpolation are working.
-    Only do worked test cases.
-    """
-    pass
-    
+
 
 if __name__ == '__main__':
-    flightCheck()
     monteCarlo()
