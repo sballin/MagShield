@@ -1,3 +1,6 @@
+"""
+For better simulation of surface charge: https://www.particleincell.com/2011/spacecraft-charging
+"""
 import scipy.integrate
 import numpy as np
 import matplotlib.pyplot as plt

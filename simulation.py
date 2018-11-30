@@ -1,4 +1,3 @@
-from __future__ import print_function
 import numpy as np
 from numba import njit, prange
 import matplotlib
@@ -9,13 +8,24 @@ import math
 import time
 
 
+settings = {
+                'fieldFile':          'nov20.txt',
+                'rLim':               50,
+                'numParticles':       10000,
+                'steppingMethod':     2, # 1: Runge-Kutta, 2: Boris-Buneman
+                'fluxGridCoarseness': 1,
+                'qmPrescribed':       None, #1.6021766208e-19/1.672621898e-27
+                'v0Prescribed':       None  #262326089.7
+           }
+
+
 @njit()
 def nearestIndex(array, value):
     """
     Return index of closest matching value in array.
     Data must be sorted but can be irregularly spaced.
     """
-    idx = np.searchsorted(array, value, side="left")
+    idx = np.searchsorted(array, value, side='left')
     if idx > 0 and (idx == len(array) or math.fabs(value - array[idx-1]) < math.fabs(value - array[idx])):
         return idx-1
     return idx
@@ -24,15 +34,16 @@ def nearestIndex(array, value):
 @njit()
 def nearestIndexNoSearch(start, stop, step, value):
     """
-    TODO: Why is performance here bad?
+    TODO: Why is performance here bad? Try specifying signature.
     """
     if value < start:
-        return 0
+        index =  0
     elif value > stop:
-        return int((stop - start)/step)
-    index = int((value - start)/step)
-    if value - (start + step*index) > step/2:
-        index += 1
+        index = int((stop - start)/step)
+    else:
+        index = int((value - start)/step)
+        if value - (start + step*index) > step/2:
+            index += 1
     return index
 
 
@@ -74,6 +85,25 @@ def randomPointOnSphere(r):
     return point
     
     
+def randomDirectionCos(negativeSurfaceNormal):
+    """
+    Tutorial: https://www.particleincell.com/2015/cosine-distribution
+    Paper: https://molflow.web.cern.ch/sites/molflow.web.cern.ch/files/1-s2.0-S0042207X02001732-main.pdf
+    Geant implementation: https://github.com/Geant4/geant4/blob/6aa23be5171b125c3363b5a4cfa00a57e524598b/source/event/src/G4SPSAngDistribution.cc#L375
+    """
+    # Pick theta with P(theta) = cos(theta) over [0, pi/2)
+    theta = np.arcsin(np.random.random()**.5) 
+    # Pick a random direction from which to march outward from the surface normal tip
+    normalShift = randomPointOnSphere(1)
+    D = cross(normalShift, negativeSurfaceNormal)
+    D /= np.linalg.norm(D)
+    # March outward by an amount d = |negativeSurfaceNormal| tan(theta)
+    D *= np.linalg.norm(negativeSurfaceNormal)*np.tan(theta)
+    D += negativeSurfaceNormal
+    # Normalize the final direction vector
+    return D/np.linalg.norm(D)
+    
+    
 @njit()
 def KEtoSpeed(KE, mass):
     """
@@ -88,7 +118,7 @@ def gamma(v):
     return 1/(1-(v[0]**2+v[1]**2+v[2]**2)/c**2)**.5
     
     
-@njit()    
+@njit()
 def gyroRadius(v, q, B, m):
     return v*m/(q*B)
 
@@ -241,33 +271,33 @@ def BxyzInterpolated(x_vec, BR, BZ, R, Z):
     Bx = BRinterp * x/r
     By = BRinterp * y/r
     return np.array([Bx, By, BZinterp])
-
-     
-@njit()
-def acceleration(xv, va, qm, BR, BZ, r, z):
-    """"
-    Return old v and acceleration due to Lorentz force.
-    va should be a vector of zeros.
-    """
-    B = BxyzInterpolated(xv[:3], BR, BZ, r, z)
-    va[:3] = xv[3:]
-    va[3] = qm*(xv[4]*B[2]-xv[5]*B[1])
-    va[4] = qm*(xv[5]*B[0]-xv[3]*B[2])
-    va[5] = qm*(xv[3]*B[1]-xv[4]*B[0])
-    return va
     
     
-@njit()
-def accelerationConstantB(xv, B, qm):
+@njit()    
+def RKva(xv, qm, BR, BZ, r, z):
     va = np.zeros(6)
     va[:3] = xv[3:]
-    u = qm*cross(xv[3:], B)
-    va[3:] = u/gamma(va[:3])
+    B = BxyzInterpolated(xv[:3], BR, BZ, r, z)
+    va[3:] = qm*cross(xv[3:], B)/gamma(va[:3])
     return va
+        
+        
+@njit()
+def RKnext(x, v, qm, BR, BZ, r, z, dt):
+    """
+    Returns trajectory and velocity of particle in next timestep.
+    """
+    xv = np.concatenate((x, v))
+    k1 = dt * RKva(xv,        qm, BR, BZ, r, z)
+    k2 = dt * RKva(xv + k1/2, qm, BR, BZ, r, z)
+    k3 = dt * RKva(xv + k2/2, qm, BR, BZ, r, z)
+    k4 = dt * RKva(xv + k3,   qm, BR, BZ, r, z)
+    xv += 1/6*(k1 + 2*k2 + 2*k3 + k4) # [x,v] + dt*[v,a]
+    return xv[:3], xv[3:] 
     
     
 @njit()
-def BBnext(x, v, B, E, qm, dt):
+def BBnext(x, v, qm, B, E, dt):
     """
     Boris Buneman method. vNext is actually v_{n+1/2}, so need x[0] at t = 1/2 delta t. 
     
@@ -277,97 +307,103 @@ def BBnext(x, v, B, E, qm, dt):
     """
     vMinus = v + qm*E*0.5*dt
     t = qm*B*0.5*dt/gamma(vMinus)
-    tMagnitudeSquared = t[0]*t[0] + t[1]*t[1] + t[2]*t[2]
+    tMagnitudeSquared = t[0]**2 + t[1]**2 + t[2]**2
     s = 2*t/(1+tMagnitudeSquared)
     vPrime = vMinus + cross(vMinus, t)
     vPlus = vMinus + cross(vPrime, s)
     vNext = vPlus + qm*E*0.5*dt
     return x + vNext*dt, vNext
-    
-        
-@njit()    
-def RKnext(x, v, B, E, qm, dt):
-    """
-    Returns trajectory and velocity of particle in next timestep.
-    """
-    xvi = np.zeros(6)
-    xvi[:3] = x
-    xvi[3:] = v
-    k1 = dt * accelerationConstantB(xvi,         B, qm)
-    k2 = dt * accelerationConstantB(xvi + k1/2., B, qm)
-    k3 = dt * accelerationConstantB(xvi + k2/2., B, qm)
-    k4 = dt * accelerationConstantB(xvi + k3,    B, qm)
-    xvNext = xvi+1./6.*(k1 + 2*k2 + 2*k3 + k4) # [x,v] + dt*[v,a]
-    return xvNext[:3], xvNext[3:]
 
     
 @njit(parallel=True)
-def monteCarloRun(rLim, qms, vs, dt, r, z, BR, BZ, accel, particles, reductionFactor, startingPoints, directions):
-    totalGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
-    trappedGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
-    rReduced = np.linspace(np.min(r), np.max(r), len(r)//reductionFactor)
+def monteCarloRun(startingPoints, qms, vs, directions, BR, BZ, r, z, rLim, fluxGridCoarseness, steppingMethod):    
+    """
+    Launch particles from uniformly random points on a sphere centered at dipole.
+    Uniformly random angle as long as it points inside sphere (pick another point on the sphere).
+    Random energy from distribution.
+    
+    At each step add particle to tally of square cell in which it finds itself using modulo and index. (Investigate unique particles vs. total points.)
+    """
+    totalGrid = np.zeros((BR.shape[0]//fluxGridCoarseness, BR.shape[1]//fluxGridCoarseness))
+    trappedGrid = np.zeros((BR.shape[0]//fluxGridCoarseness, BR.shape[1]//fluxGridCoarseness))
+    rReduced = np.linspace(np.min(r), np.max(r), len(r)//fluxGridCoarseness)
     rDelta = rReduced[1]-rReduced[0]
     rReduced += rDelta/2. # Use distance to cell centers to count particles
-    zReduced = np.linspace(np.min(z), np.max(z), len(z)//reductionFactor)
+    zReduced = np.linspace(np.min(z), np.max(z), len(z)//fluxGridCoarseness)
     zDelta = zReduced[1]-zReduced[0]
     zReduced += zDelta/2. # Use distance to cell centers to count particles
     
     habitatCrossings = 0
     GDTcrossings = 0
+    detectorCounts = np.zeros(14)
     
-    for particleNumber in prange(particles):
-        if not particleNumber % 1000:
+    gridStep = r[1]-r[0]
+    
+    numParticles = len(qms)
+    for particleNumber in prange(numParticles):
+        if particleNumber % (numParticles/10) == 0:
             print(particleNumber)
             
         qm = qms[particleNumber]
         v0 = vs[particleNumber]
-        timeElapsed = 0
+        dt = (r[1]-r[0])/v0/2
         maxTime = rLim * 3 / v0
         maxSteps = int(maxTime / dt)
-        particleGrid = np.zeros((BR.shape[0]//reductionFactor, BR.shape[1]//reductionFactor))
+        particleGrid = np.zeros((BR.shape[0]//fluxGridCoarseness, BR.shape[1]//fluxGridCoarseness))
         crossedHabitat = 0
         crossedGDT = 0
+        particleDetectorCounts = np.zeros(14)
         
         # Generate random point and direction
         point1 = startingPoints[particleNumber]
         direction = directions[particleNumber]
+        noAccelStep = 0.99*gridStep*direction
         trapped = True
         
-        xv = np.zeros(6)
-        xv[:3] = point1
-        xv[3:] = direction*v0
-        va = np.zeros(6)
+        x = point1.copy() # copy is important... 
+        v = direction*v0
+        E = np.zeros(3)
+        
+        if steppingMethod == 2:
+            x, _ = RKnext(x, v, qm, BR, BZ, r, z, dt/2)
 
         for i in range(maxSteps):
-            particleR = (xv[0]**2 + xv[1]**2)**.5
+            # Count crossings
+            particleR = (x[0]**2 + x[1]**2)**.5
             nearestR = nearestIndex(rReduced, particleR)
-            nearestZ = nearestIndex(zReduced, xv[2])
-            if particleGrid[nearestZ, nearestR] == 0:
-                particleGrid[nearestZ, nearestR] = 1
-            if accel:
-                k1 = dt * acceleration(xv, va, qm, BR, BZ, r, z)
-                k2 = dt * acceleration(xv + k1/2., va, qm, BR, BZ, r, z)
-                k3 = dt * acceleration(xv + k2/2., va, qm, BR, BZ, r, z)
-                k4 = dt * acceleration(xv + k3, va, qm, BR, BZ, r, z)
-                xv += 1./6.*(k1 + 2.*k2 + 2.*k3 + k4)
-            else:
-                xv[0] += xv[3]*dt
-                xv[1] += xv[4]*dt
-                xv[2] += xv[5]*dt
-                
-            if 10 < particleR < 14 and -2 < xv[2] < 2:
+            nearestZ = nearestIndex(zReduced, x[2])
+            particleGrid[nearestZ, nearestR] = 1
+            if 9.7 < particleR < 12.3 and -1.3 < x[2] < 1.3:
                 crossedHabitat = 1
-            if -14 < xv[2] < 14 and particleR < 5:
+            if -14 < x[2] < 14 and particleR < 5:
                 crossedGDT = 1
-            # If out of bounds
-            if (particleR**2+xv[2]**2)**.5 > rLim: 
+            # Will's detectors
+            # for det in range(14):
+            #     vd = (x[0] - det*1.4, x[1], x[2])
+            #     if (vd[0]**2+vd[1]**2+vd[2]**2)**.5 < 0.5:
+            #         particleDetectorCounts[det] = 1
+                
+            # Step
+            if steppingMethod == 0:
+                x += noAccelStep
+            elif steppingMethod == 1:
+                x, v = RKnext(x, v, qm, BR, BZ, r, z, dt)
+            elif steppingMethod == 2:
+                B = BxyzInterpolated(x, BR, BZ, r, z)
+                x, v = BBnext(x, v, qm, B, E, dt)
+                
+            # Stop stepping if out of bounds
+            if (particleR**2+x[2]**2)**.5 > rLim + .001: 
                 trapped = False
                 break
+        detectorCounts += particleDetectorCounts
         totalGrid += particleGrid
         if trapped:
             trappedGrid += particleGrid
         habitatCrossings += crossedHabitat
         GDTcrossings += crossedGDT
+        
+    print("Will's detectors:", detectorCounts)
         
     # Divide cell counts by volume of cell
     totalGridUnscaled = totalGrid.copy()
@@ -381,64 +417,74 @@ def monteCarloRun(rLim, qms, vs, dt, r, z, BR, BZ, accel, particles, reductionFa
     return rReduced, zReduced, totalGrid, trappedGrid, habitatCrossings, GDTcrossings, totalGridUnscaled, trappedGridUnscaled
     
     
-def monteCarloSurvey():
+def runSurvey():
     """
-    Launch particles from uniformly random points on a sphere centered at dipole.
-    Uniformly random angle as long as it points inside sphere (pick another point on the sphere).
-    Random energy from distribution.
+    Carry out Monte Carlo simulations with and without fields.
+    """
+    fieldFile = globals()['settings']['fieldFile']
+    # Number of particles to launch
+    numParticles = globals()['settings']['numParticles']
+    # Radius of spherical simulation boundary used for launching and exiting
+    rLim = globals()['settings']['rLim']
+    # Particle stepping method
+    steppingMethod = globals()['settings']['steppingMethod']
+    # Coarseness of output grid that counts particle fluxes in simulation volume
+    fluxGridCoarseness = globals()['settings']['fluxGridCoarseness']
     
-    At each step add particle to tally of square cell in which it finds itself using modulo and index. (Investigate unique particles vs. total points.)
-    """
     # B field in R and Z
-    r, z, BR = fieldGrid('fields/Brs_oct30.txt')
-    _, _, BZ = fieldGrid('fields/Bzs_oct30.txt')
+    r, z, BR = fieldGrid('fields/Brs_' + fieldFile)
+    _, _, BZ = fieldGrid('fields/Bzs_' + fieldFile)
+    _, _, habitatBR = fieldGrid('fields/Brs_habitat_' + fieldFile)
+    _, _, habitatBZ = fieldGrid('fields/Bzs_habitat_' + fieldFile)
+    r = r[:-1]
+    z = z[:-1]
+    BR = BR[:-1,:-1] # I MAY CAUSE A BUG IN THE FUTURE
+    BZ = BZ[:-1,:-1]
+    habitatMax = np.max((habitatBR**2+habitatBZ**2)**.5)
+    habitatPrescription = 30
+    BR += habitatBR*habitatPrescription/habitatMax
+    BZ += habitatBZ*habitatPrescription/habitatMax
+    print('Habitat prescription (T):', habitatPrescription)
     Bmagnitude = (BR**2+BZ**2)**.5
 
-    # Coarseness of the output R, Z flux grid
-    reductionFactor = 1
-    # Radius of spherical simulation boundary used for launching and exiting
-    rLim = 30
-    # Particle settings
-    dt = 1e-10; print('dt (s):', dt)
+    qms, vs = qmAndVelocitySpectrum(numParticles)
+    if globals()['settings']['qmPrescribed']:
+        qms = np.ones(numParticles)*globals()['settings']['qmPrescribed']
+    if globals()['settings']['v0Prescribed']:
+        vs = np.ones(numParticles)*globals()['settings']['v0Prescribed']
 
-    # Number of particles to launch
-    particles = 100000
+    startingPoints = [randomPointOnSphere(rLim) for _ in range(numParticles)]
+    directions = [randomDirectionCos(-sp) for sp in startingPoints]
 
-    qms, vs = qmAndVelocitySpectrum(particles)
-
-    startingPoints = [randomPointOnSphere(rLim) for _ in range(particles)]
-    directions = [randomPointOnSphere(1.) for _ in range(particles)]
-
-    # Run simulations without magnetic field
+    # Simulate without magnetic field
     start = time.time()
-    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff, gridOffUnscaled, _ = monteCarloRun(rLim, qms, vs, dt, r, z, BR, BZ, False, particles, reductionFactor, startingPoints, directions)
-    print('Time elapsed (s):', time.time()-start)
-    np.save('cache/{}particles_no_accel.npy'.format(particles), [rReduced, zReduced, gridOff])
+    rReduced, zReduced, gridOff, _,  habitatCrossingsOff, GDTcrossingsOff, gridOffUnscaled, _ = monteCarloRun(startingPoints, qms, vs, directions, BR, BZ, r, z, rLim, fluxGridCoarseness, 0)
+    print('Time elapsed (s):', int(time.time()-start))
     
-    # Run simulation with magnetic field
+    # Simulate with magnetic field
     start = time.time()
-    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn, gridOnUnscaled, trappedOnUnscaled = monteCarloRun(rLim, qms, vs, dt, r, z, BR, BZ, True, particles, reductionFactor, startingPoints, directions)
-    print('Time elapsed (s):', time.time()-start)
-    np.save('cache/{}particles_accel.npy'.format(particles), [rReduced, zReduced, gridOn])
+    _, _, gridOn, trappedOn, habitatCrossingsOn, GDTcrossingsOn, gridOnUnscaled, trappedOnUnscaled = monteCarloRun(startingPoints, qms, vs, directions, BR, BZ, r, z, rLim, fluxGridCoarseness, steppingMethod)
+    print('Time elapsed (s):', int(time.time()-start))
+    # np.save('cache/{}particles_accel.npy'.format(numParticles), [rReduced, zReduced, gridOn])
     try:
-        print('GDT crossing change: {}%'.format(round(100*(GDTcrossingsOn-GDTcrossingsOff)/GDTcrossingsOff, 3)))
-        print('Habitat crossing change: {}%'.format(round(100*(habitatCrossingsOn-habitatCrossingsOff)/habitatCrossingsOff, 3)))
+        print('---\nGDT crossing change: {}%'.format(round(100*(GDTcrossingsOn-GDTcrossingsOff)/GDTcrossingsOff, 3)))
+        print('Habitat crossing change: {}%\n---'.format(round(100*(habitatCrossingsOn-habitatCrossingsOff)/habitatCrossingsOff, 3)))
     except Exception as e:
         print(e)
     
     # plotDiff(r, z, Bmagnitude, gridOn, gridOff)
-    plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOnUnscaled, gridOffUnscaled, trappedOnUnscaled)
+    plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
 
 
 def plotDiff(r, z, Bmagnitude, gridOn, gridOff):
     plt.figure(figsize=(6, 6))
-    plt.title('Flux change')
+    plt.title('Flux difference')
     gridDifference = 100 * (gridOn - gridOff) / gridOff
     bwr = plt.cm.bwr
     bwr.set_bad((0, 0, 0, 1))
     extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
     plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
-    plt.colorbar(label='Percent increase')
+    plt.colorbar(label='Percent change in flux')
     plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='#00FFFF')
     plt.xlabel('R (m)')
     plt.ylabel('Z (m)')
@@ -451,19 +497,26 @@ def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
     plt.subplot(231)
     plt.title('B field off')
     extent = [np.min(r), np.max(r), np.min(z), np.max(z)]
-    plt.imshow(gridOff, vmin=0, extent=extent, cmap=plt.cm.jet)
+    plt.imshow(gridOff, extent=extent, vmax=themax, cmap=plt.cm.jet, norm=matplotlib.colors.LogNorm())
     plt.colorbar(label='Particles/$\mathregular{m^3}$')
     plt.ylabel('Z (m)')
 
     plt.subplot(232)
     plt.title('B field on, 5 T contour')
-    plt.imshow(gridOn, vmin=0, extent=extent, cmap=plt.cm.jet)
+    plt.imshow(gridOn, extent=extent, vmax=themax, cmap=plt.cm.jet, norm=matplotlib.colors.LogNorm())
     plt.colorbar(label='Particles/$\mathregular{m^3}$')
     plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
 
     plt.subplot(233)
     plt.title('(B on - B off)/(B off)')
-    gridDifference = 100 * (gridOn - gridOff) / gridOff
+    # gridDifference = 100 * (gridOn - gridOff) / gridOff
+    gridDifference = np.zeros(gridOn.shape)
+    for i in range(gridOn.shape[0]):
+        for j in range(gridOn.shape[1]):
+            if gridOff[i, j] > 0:
+                gridDifference[i, j] = 100*(gridOn[i, j]-gridOff[i, j])/gridOff[i, j]
+            else:
+                gridDifference[i, j] = np.nan
     bwr = plt.cm.bwr
     bwr.set_bad((0, 0, 0, 1))
     plt.imshow(gridDifference, extent=extent, cmap=bwr, vmin=-100, vmax=100)
@@ -479,7 +532,7 @@ def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
 
     plt.subplot(235)
     plt.title('B field on: trapped particles')
-    plt.imshow(trappedOn, extent=extent, cmap=plt.cm.jet)
+    plt.imshow(trappedOn, extent=extent, cmap=plt.cm.jet, norm=matplotlib.colors.LogNorm())
     plt.colorbar(label='Particles/$\mathregular{m^3}$')
     plt.contour(Bmagnitude, levels=[5.], extent=extent, colors='white')
     plt.xlabel('R (m)')
@@ -489,10 +542,10 @@ def plot6panel(r, z, rReduced, zReduced, Bmagnitude, gridOn, gridOff, trappedOn)
     plt.plot(rReduced, gridOn[len(zReduced) // 2])
     plt.ylabel('Particles/$\mathregular{m^3}$')
     plt.xlabel('R (m)')
-
     plt.tight_layout()
+
     plt.show()
 
 
 if __name__ == '__main__':
-    monteCarloSurvey()
+    runSurvey()

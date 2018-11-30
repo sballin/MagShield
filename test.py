@@ -1,4 +1,3 @@
-from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -321,11 +320,68 @@ def testOrbit():
     B = np.array([0., 0, Bmagnitude])
     E = np.array([0., 0, 0])
     for i in range(steps-1):
-        x[i+1], vNext = simulation.BBnext(x[i], vNext, B, E, qm, dt)
+        x[i+1], vNext = simulation.BBnext(x[i], vNext, qm, B, E, dt)
     plt.figure(figsize=(7,7))
     # plt.plot((x[:,0]**2+x[:,1]**2)**.5); plt.xlabel('Steps'), plt.ylabel('Radius (m)') 
     plt.xlabel('x (m)'); plt.ylabel('y (m)'); plt.axis('equal'); plt.gcf().gca().add_artist(plt.Circle((0,0), radius=gyroradius, color='red', fill=False)); plt.axis('equal');plt.scatter(x[:,0], x[:,1], c=range(steps), s=1, cmap=plt.cm.winter); plt.colorbar(label='Number of timesteps (%d per period)' % int(gyroperiod/dt)); plt.title('BBR, Bz = 1 T, red = theoretical')
     plt.show()
     
     
-testOrbit()
+def testTrajectory():
+    dt = 1e-11; print('dt (s):', dt)
+    fieldFile = 'oct30.txt'
+    r, z, BR = simulation.fieldGrid('fields/Brs_' + fieldFile)
+    _, _, BZ = simulation.fieldGrid('fields/Bzs_' + fieldFile)
+    BR = BR*0 # BUG
+    BZ = BZ*0
+    E = np.array([0., 0, 0])
+        
+    qm = 9.6e7
+    v0 = 2.6e8
+    maxSteps = 30000
+    
+    # Generate random point and direction
+    rLim = 30
+    x = simulation.randomPointOnSphere(rLim)
+    xNoField = x
+    direction = simulation.randomPointOnSphere(rLim)-x
+    direction /= np.linalg.norm(direction)
+    v = direction*v0
+    vNoField = v
+    
+    xs = np.zeros((maxSteps, 3))
+    xNoFields = np.zeros((maxSteps, 3))
+    for i in range(maxSteps):
+        xNoField += vNoField*dt
+        xNoFields[i] = xNoField
+        # x, v = simulation.RKnext(x, v, qm, BR, BZ, r, z, dt)
+        B = simulation.BxyzInterpolated(x, BR, BZ, r, z)
+        x, v = simulation.BBnext(x, v, qm, B, E, dt)
+        xs[i] = x
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.gca(projection='3d')
+    ax.plot(xs[:,0], xs[:,1], xs[:,2])    
+    ax.plot(xNoFields[:,0], xNoFields[:,1], xNoFields[:,2], '--')    
+    _axisEqual3D(ax)
+    plt.show()
+    
+    
+def testRandomDirectionCos():
+    fig = plt.figure(figsize=(7, 7))
+    ax = fig.gca(projection='3d')
+    axis = simulation.randomPointOnSphere(3)
+    ax.plot([0, axis[0]], [0,axis[1]], [0,axis[2]], color='black')
+    xs = []
+    ys = []
+    zs = []
+    for _ in range(1000):
+        d = simulation.randomDirectionCos(axis)
+        xs.append(d[0])
+        ys.append(d[1])
+        zs.append(d[2])
+    ax.scatter(xs, ys, zs, color='blue',alpha=.02)
+    _axisEqual3D(ax)
+    plt.show()#
+      
+        
+testRandomDirectionCos()
